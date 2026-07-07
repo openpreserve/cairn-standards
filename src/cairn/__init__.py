@@ -1,4 +1,4 @@
-"""Cairn — durable, resolvable hosting for preservation standards."""
+"""Cairn - durable, resolvable hosting for preservation standards."""
 
 __version__ = "0.1.0"
 

@@ -1,0 +1,9 @@
+# Local-testing overlay: publish the web port to localhost.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+#
+# In tunnel mode you do NOT use this file; cloudflared reaches web over the docker
+# network and nothing is published on the host.
+services:
+  web:
+    ports:
+      - "127.0.0.1:8080:8080"

@@ -1,8 +1,9 @@
 id: eaf
-title: "Encoded Archival Functions (EAF)"
+title: "Encoded Archival Context - Functions (EAC-F)"
 summary: >-
-  An XML standard for encoding descriptions of the functions and activities of
-  corporate bodies, persons, and families associated with archival records.
+  An XML standard for encoding the functions performed by agents - the WHY behind
+  the records.
+based_on: "the International Standard for Describing Functions (ISDF), 2007"
 
 steward:
   org: "Technical Subcommittee on Encoded Archival Standards (TS-EAS), Society of American Archivists"
@@ -11,14 +12,16 @@ steward:
 
 # Where the artifacts really live. Cairn replicates from here; it does not store schema
 # bytes in this repo. `ref` is the pre-release branch until the official tag is cut.
+# NOTE: the public identifier is `eaf` (locked by the schema's targetNamespace and the
+# agreed URLs); the standard's current name is EAC-F.
 source:
   type: github
   repo: SAA-SDT/eas-schemas
   ref: release_2026_07
 
 links:
-  - label: "EAS Tag Libraries"
-    url: "https://github.com/SAA-SDT/EAS-TagLibraries"
+  - label: "Tag Library (browse online)"
+    url: "https://saa-sdt.github.io/EAS-TagLibraries/"
   - label: "EAS Best Practices"
     url: "https://saa-sdt.github.io/EAS-Best-Practices/"
 
@@ -36,14 +39,22 @@ releases:
         role: schema
         from: repo
         path: xml-schemas/eaf/eaf.xsd
-        title: "EAF W3C XML Schema"
+        title: "EAC-F W3C XML Schema"
       - name: eaf.rng
         role: relaxng
         from: repo
         path: xml-schemas/eaf/eaf.rng
-        title: "EAF RELAX NG schema"
+        title: "EAC-F RELAX NG schema"
       - name: eaf.nvdl
         role: nvdl
         from: repo
         path: xml-schemas/eaf/eaf.nvdl
-        title: "EAF NVDL validation dispatcher"
+        title: "EAC-F NVDL validation dispatcher"
+      # Human-readable "Standard text" - mirrored from the EAS Tag Libraries.
+      - name: eaf-taglibrary.pdf
+        role: taglibrary-pdf
+        from: repo
+        repo: SAA-SDT/EAS-TagLibraries
+        ref: master
+        path: pdf/EAF1-TL-eng.pdf
+        title: "EAC-F Tag Library (PDF)"

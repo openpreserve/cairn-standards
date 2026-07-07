@@ -1,17 +1,31 @@
 name: cairn
 
-# The web service serves plain HTTP on :8080. In production, put OPF's existing
-# TLS-terminating reverse proxy in front of it (see reverse-proxy.example.conf).
+# Cairn runs as three small services around two shared volumes:
+#   syncer  -> replicates + renders into the volumes every SYNC_INTERVAL
+#   web     -> nginx serves the volumes on :8080 (internal), self-reloads for new routes
+#   cloudflared (opt-in) -> Cloudflare Tunnel ingress; no inbound ports, TLS at the edge
+#
+# Ingress options:
+#   Local testing:  docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+#                   (publishes 127.0.0.1:8080)
+#   Tunnel:         docker compose --profile tunnel up -d --build
+#                   (no host ports; traffic arrives via cloudflared over the docker network)
+
 services:
   web:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-      # Uncomment to pass a GitHub token (higher API rate limits during sync):
-      # secrets: [github_token]
     image: cairn-web:latest
-    ports:
-      - "8080:8080"
+    # Internal only by default; reachable by cloudflared over the compose network.
+    # Host publishing is added by docker-compose.local.yml for local testing.
+    expose:
+      - "8080"
+    environment:
+      RELOAD_INTERVAL: "21600"        # reload nginx every 6h to pick up new routes
+    volumes:
+      - site_data:/usr/share/nginx/html
+      - routes_data:/etc/nginx/cairn
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
@@ -19,6 +33,43 @@ services:
       timeout: 3s
       retries: 3
 
-# secrets:
-#   github_token:
-#     file: ./github_token.txt
+  syncer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.syncer
+    image: cairn-syncer:latest
+    environment:
+      SYNC_INTERVAL: "21600"          # resync every 6h
+      # --- Manifest source (pick one; default uses the image-baked registry) ---
+      # git-pull mode: clone + pull the repo so NEW standards are picked up automatically.
+      #   REPO_URL: "https://github.com/OPF-ORG/cairn-standards.git"
+      #   REPO_DIR: "/repo"
+      #   REPO_BRANCH: "main"
+      # bind-mount mode: mount a host checkout and let the host keep it current.
+      #   REPO_DIR: "/repo"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"   # optional: lifts GitHub API rate limits
+    volumes:
+      - site_data:/data/site
+      - routes_data:/data/conf
+      # git-pull (clone) mode also needs a place to clone into:
+      # - repo_data:/repo
+      # bind-mount mode instead:
+      # - ../:/repo:ro   # (read-only host checkout; sync writes only to the volumes)
+    restart: unless-stopped
+
+  # Opt-in ingress. Enable with: docker compose --profile tunnel up -d
+  # Requires CLOUDFLARE_TUNNEL_TOKEN in deploy/.env (cloudflared errors if it is empty).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:-}"
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  site_data:
+  routes_data:
+  # repo_data:   # uncomment for git-pull (clone) mode

@@ -1,6 +1,6 @@
 <!-- Provisional copy. Replace with the finalised landing-page text from TS-EAS. -->
 
-**Encoded Archival Context — Corporate Bodies, Persons, and Families (EAC-CPF)** is an XML
+**Encoded Archival Context - Corporate Bodies, Persons, and Families (EAC-CPF)** is an XML
 standard for describing the *creators* of archival records: the organisations, people, and
 families whose activities produced them, and the relationships between them.
 

@@ -96,6 +96,7 @@ class Standard:
     source: Source
     major_lines: list[MajorLine]
     releases: list[Release]
+    based_on: str | None = None
     links: list[Link] = field(default_factory=list)
     directory: Path | None = None
 
@@ -187,6 +188,7 @@ def _build(data: dict[str, Any], directory: Path) -> Standard:
         source=source,
         major_lines=major_lines,
         releases=releases,
+        based_on=data.get("based_on"),
         links=[Link(label=l["label"], url=l["url"]) for l in data.get("links", [])],
         directory=directory,
     )

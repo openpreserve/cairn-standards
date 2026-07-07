@@ -28,28 +28,33 @@ ROLE_LABELS = {
     "other": "File",
 }
 
-# RDDL "natures" — machine-readable labels for what each resource *is*.
+# RDDL "natures" and "purposes" - machine-readable labels for what each resource *is*
+# and why it relates to the namespace. These use http://rddl.org/ (not www., not https).
+#
+# NOTE (2026-07): rddl.org's TLS certificate expired around early July 2026, so https to
+# that host currently fails and www.rddl.org does not resolve. We use plain http://rddl.org/.
+# TODO: recheck before a future release - if they renew the cert, switch to https://rddl.org/.
 RDDL_NATURE = {
     "schema": "http://www.w3.org/2001/XMLSchema",
     "relaxng": "http://relaxng.org/ns/structure/1.0",
     "nvdl": "http://purl.oclc.org/dsdl/nvdl/ns/structure/1.0",
     "schematron": "http://purl.oclc.org/dsdl/schematron",
     "taglibrary-html": "http://www.w3.org/1999/xhtml",
-    "taglibrary-pdf": "http://www.rddl.org/natures#pdf",
+    "taglibrary-pdf": "http://www.iana.org/assignments/media-types/application/pdf",
     "documentation": "http://www.w3.org/1999/xhtml",
-    "license": "http://www.rddl.org/natures#resource",
-    "other": "http://www.rddl.org/natures#resource",
+    "license": "http://rddl.org/natures#resource",
+    "other": "http://rddl.org/natures#resource",
 }
 RDDL_PURPOSE = {
-    "schema": "http://www.rddl.org/purposes#schema-validation",
-    "relaxng": "http://www.rddl.org/purposes#schema-validation",
-    "nvdl": "http://www.rddl.org/purposes#validation",
-    "schematron": "http://www.rddl.org/purposes#schema-validation",
-    "taglibrary-html": "http://www.rddl.org/purposes#reference",
-    "taglibrary-pdf": "http://www.rddl.org/purposes#reference",
-    "documentation": "http://www.rddl.org/purposes#reference",
-    "license": "http://www.rddl.org/purposes#reference",
-    "other": "http://www.rddl.org/purposes#reference",
+    "schema": "http://rddl.org/purposes#normative-reference",
+    "relaxng": "http://rddl.org/purposes#normative-reference",
+    "nvdl": "http://rddl.org/purposes#normative-reference",
+    "schematron": "http://rddl.org/purposes#normative-reference",
+    "taglibrary-html": "http://rddl.org/purposes#reference",
+    "taglibrary-pdf": "http://rddl.org/purposes#reference",
+    "documentation": "http://rddl.org/purposes#reference",
+    "license": "http://rddl.org/purposes#reference",
+    "other": "http://rddl.org/purposes#reference",
 }
 
 
@@ -99,12 +104,31 @@ def _load_provenance(root: Path, std_id: str, version: str) -> dict | None:
     return None
 
 
+_RAW_PREFIX = "https://raw.githubusercontent.com/"
+
+
+def _github_link(source: dict | None) -> str | None:
+    """Turn recorded provenance into a browsable GitHub permalink (pinned to the commit)."""
+    if not source:
+        return None
+    url = source.get("url") or ""
+    repo = source.get("repo")
+    ref = source.get("commit") or source.get("ref")
+    if repo and ref and url.startswith(_RAW_PREFIX):
+        parts = url[len(_RAW_PREFIX):].split("/", 3)  # owner/name/ref/path...
+        if len(parts) == 4:
+            return f"https://github.com/{repo}/blob/{ref}/{parts[3]}"
+    return url or None
+
+
 def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
     prov = _load_provenance(root, std.id, rel.version)
     prov_arts = {a["name"]: a for a in prov["artifacts"]} if prov else {}
     views = []
     for art in rel.artifacts:
         p = prov_arts.get(art.name, {})
+        source = p.get("source") or {}
+        commit = source.get("commit")
         views.append(
             {
                 "name": art.name,
@@ -114,7 +138,12 @@ def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
                 "media_type": art.content_type(),
                 "bytes": p.get("bytes"),
                 "sha256": p.get("sha256"),
-                "source": p.get("source"),
+                "source": source,
+                "github": _github_link(source),
+                "upstream_repo": source.get("repo"),
+                "upstream_ref": source.get("ref"),
+                "commit": commit,
+                "commit_short": commit[:12] if commit else None,
             }
         )
     return views

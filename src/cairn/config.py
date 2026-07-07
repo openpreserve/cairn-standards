@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 STANDARDS_DIRNAME = "standards"
@@ -35,7 +36,9 @@ def schema_path(root: Path) -> Path:
 
 
 def site_dir(root: Path) -> Path:
-    return root / SITE_DIRNAME
+    """Output document root. Overridable via CAIRN_SITE_DIR (used by the container)."""
+    override = os.environ.get("CAIRN_SITE_DIR")
+    return Path(override) if override else root / SITE_DIRNAME
 
 
 def build_dir(root: Path) -> Path:
@@ -43,4 +46,6 @@ def build_dir(root: Path) -> Path:
 
 
 def nginx_routes_path(root: Path) -> Path:
-    return build_dir(root) / NGINX_ROUTES_RELPATH
+    """Generated nginx routes file. Overridable via CAIRN_ROUTES_FILE."""
+    override = os.environ.get("CAIRN_ROUTES_FILE")
+    return Path(override) if override else build_dir(root) / NGINX_ROUTES_RELPATH

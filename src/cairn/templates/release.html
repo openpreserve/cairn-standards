@@ -5,11 +5,12 @@
   <p class="crumb"><a href="/">Standards</a> / <a href="/{{ std.id }}">{{ std.id }}</a> / v{{ rel.version }}</p>
   <h1>{{ std.title }} <span class="note">v{{ rel.version }}</span> <span class="badge {{ rel.status }}">{{ rel.status }}</span></h1>
 
-  <div class="kv">
+  <dl class="kv">
     <dt>Namespace</dt><dd><code>{{ std.namespace_for(rel.major) }}</code></dd>
     <dt>Major line</dt><dd><a href="/{{ std.id }}/v{{ rel.major }}">/{{ std.id }}/v{{ rel.major }}</a> (tracks latest v{{ rel.major }}.x.y)</dd>
+    {% if std.based_on %}<dt>Based on</dt><dd>{{ std.based_on }}</dd>{% endif %}
     {% if rel.released %}<dt>Released</dt><dd>{{ rel.released }}</dd>{% endif %}
-  </div>
+  </dl>
 
   {% if notes_html %}
   <h2>Release notes</h2>
@@ -17,22 +18,28 @@
   {% endif %}
 
   <h2>Files</h2>
+  <p class="note">Each file is a preserved copy served from this domain. Prefer the upstream
+  original? The <strong>Source</strong> column links to the exact commit on GitHub.</p>
   <table class="files">
-    <thead><tr><th>File</th><th>Type</th><th>Size</th><th>SHA-256</th></tr></thead>
+    <thead><tr><th>File</th><th>Type</th><th>Size</th><th>SHA-256</th><th>Source</th></tr></thead>
     <tbody>
       {% for a in artifacts %}
       <tr>
         <td><a href="{{ a.url }}"><code>{{ a.name }}</code></a><br><span class="note">{{ a.title }}</span></td>
         <td><code>{{ a.media_type }}</code></td>
         <td>{{ a.bytes | humansize }}</td>
-        <td class="hash">{{ a.sha256 or "—" }}</td>
+        <td class="hash">{{ a.sha256 or "-" }}</td>
+        <td>
+          {% if a.github %}<a href="{{ a.github }}">GitHub</a>{% if a.commit_short %}<br><span class="hash">{{ a.upstream_repo }}<br>@ {{ a.commit_short }}</span>{% endif %}
+          {% else %}-{% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   <p class="note">Checksums are also published as
     <a href="/{{ std.id }}/v{{ rel.version }}/SHA256SUMS"><code>SHA256SUMS</code></a>;
-    full fetch provenance is in
+    full fetch provenance (source URL, upstream ref, commit) is in
     <a href="/{{ std.id }}/v{{ rel.version }}/provenance.json"><code>provenance.json</code></a>.</p>
 
   <h2>Referencing these files</h2>

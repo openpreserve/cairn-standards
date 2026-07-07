@@ -2,9 +2,9 @@
 
 There are two very different kinds of contribution:
 
-1. **Adding or updating a hosted standard** — the common case. No code required; you edit a
+1. **Adding or updating a hosted standard** - the common case. No code required; you edit a
    YAML manifest and (optionally) some Markdown. This guide focuses on that.
-2. **Changing the tooling** — Python in `src/cairn/`. See the bottom of this file.
+2. **Changing the tooling** - Python in `src/cairn/`. See the bottom of this file.
 
 ---
 
@@ -20,7 +20,7 @@ standards/<id>/
 ```
 
 `<id>` is the URL segment (`standards.openpreservation.org/<id>`). Use a short, lowercase,
-stable identifier. It must **not** encode the responsible organisation — organisations change;
+stable identifier. It must **not** encode the responsible organisation - organisations change;
 the identifier should not.
 
 ### 1. Write the manifest
@@ -32,7 +32,7 @@ you autocompletion and inline validation from it.
 Key ideas:
 
 - **`source`** points at where the artifacts really live (a GitHub repo + ref). Cairn fetches
-  from there — it does not store schema bytes in this repo.
+  from there - it does not store schema bytes in this repo.
 - **`major_lines[].latest`** is the concrete version that `/<id>/vN` redirects to.
 - **`releases[].artifacts[]`** lists the files to replicate for that version. Each artifact has a
   `role` (`schema`, `relaxng`, `nvdl`, `schematron`, `taglibrary-html`, `taglibrary-pdf`, …) that
@@ -80,5 +80,5 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Keep the dependency set small and prefer the standard library — this is preservation
+Keep the dependency set small and prefer the standard library - this is preservation
 infrastructure and needs to keep building for a long time.

@@ -16,6 +16,7 @@
     },
     "title": { "type": "string", "minLength": 1 },
     "summary": { "type": "string", "minLength": 1, "description": "One or two sentences for the landing page and catalog." },
+    "based_on": { "type": "string", "description": "The source standard this is based on, e.g. 'International Standard for Describing Functions (ISDF), 2007'." },
     "steward": {
       "type": "object",
       "description": "The organisation responsible for the standard. Displayed, never part of the URL.",

@@ -8,7 +8,7 @@ Layout produced under ``site/``::
 
 A released version is *frozen*: once its provenance is recorded, a later sync will
 skip it (no-op). ``--verify`` re-fetches and fails loudly if the upstream bytes for a
-released version have changed (re-tagging / tampering) — the fix is to cut a new version.
+released version have changed (re-tagging / tampering) - the fix is to cut a new version.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ API_BASE = "https://api.github.com"
 
 # Releases with these statuses are still moving (e.g. tracking a pre-release branch):
 # they are re-fetched and overwritten on every sync rather than frozen. Everything else
-# is write-once — a released version's bytes must never change.
+# is write-once - a released version's bytes must never change.
 MUTABLE_STATUSES = {"draft"}
 
 

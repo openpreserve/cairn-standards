@@ -3,18 +3,14 @@
 **Durable, resolvable hosting for preservation standards.**
 Powers [`standards.openpreservation.org`](https://standards.openpreservation.org).
 
-A *cairn* is a stack of stones that endures and marks the way. This project does both:
-it **preserves** a controlled replica of each standard's release artifacts, and it makes
-their namespace/schema URLs **resolve** — for people in a browser and for XML tools alike.
-
 ---
 
 ## Why this exists
 
 The Open Preservation Foundation (OPF) has agreed to host the [TS-EAS](https://www2.archivists.org/groups/technical-subcommittee-on-encoded-archival-standards-ts-eas)
-Encoded Archival Standards — **EAF**, **EAD**, **EAC-CPF** — under a stable domain it controls,
-with more standards (E-ARK, and other organisations') to follow. The schemas' source of truth
-stays upstream (GitHub); Cairn pulls each release into an OPF-controlled, integrity-checked,
+Encoded Archival Standards: **EAF**, **EAD**, & **EAC-CPF**, under a stable domain it controls,
+with more standards (E-ARK, for instance) to follow. The schemas' source of truth
+stays upstream (GitHub); Cairn pulls each release into a locally-controlled, integrity-checked,
 write-once replica and serves it under a permanent URL scheme.
 
 Design principles:
@@ -24,7 +20,7 @@ Design principles:
 - **Static-first, dumb serving layer.** All the logic is in an offline build step; nginx just
   serves files. Schema URLs resolve forever even when the tooling is idle.
 - **Manifest-driven.** Adding or updating a standard is a small YAML edit reviewed as a pull
-  request — not bespoke engineering. This is how the platform scales without scaling OPF's effort.
+  request - not bespoke engineering. This is how the platform scales without scaling OPF's effort.
 
 ## The URL contract
 
@@ -34,10 +30,10 @@ For a standard `eaf`, major line `v1`, latest release `v1.0.0`:
 | --- | --- |
 | `/` | Registry index of all hosted standards |
 | `/eaf` | Human landing page for the standard (all versions, stewards, links, downloads) |
-| `/eaf/v1` | **Namespace document** — readable XHTML that is also a machine-readable [RDDL](https://www.w3.org/2001/tag/doc/nsDocuments/) directory pointing at the current v1 schema files. XML clients that ask for `application/xml` are content-negotiated to the schema. |
+| `/eaf/v1` | **Namespace document** - readable XHTML that is also a machine-readable [RDDL](https://www.w3.org/2001/tag/doc/nsDocuments/) directory pointing at the current v1 schema files. XML clients that ask for `application/xml` are content-negotiated to the schema. |
 | `/eaf/v1/eaf.xsd` | `303` → the latest concrete `v1.x.y` file (pin-to-latest-minor) |
 | `/eaf/v1.0.0` | Landing page for that exact release (downloads + checksums + provenance) |
-| `/eaf/v1.0.0/eaf.xsd` | The actual schema file — `application/xml`, immutable cache, CORS `*` |
+| `/eaf/v1.0.0/eaf.xsd` | The actual schema file - `application/xml`, immutable cache, CORS `*` |
 
 **Namespace = major version only** (`/eaf/v1`). Minor/patch numbers never appear in a namespace,
 so a minor release never forces a namespace change. The exact version lives in the schema's
@@ -45,17 +41,18 @@ so a minor release never forces a namespace change. The exact version lives in t
 
 ## How it works
 
-```
-standards/<id>/standard.yaml   ─ the registry (identity, upstream source, releases, artifacts)
-        │  cairn validate       ─ check manifests against schemas/standard.schema.json
-        ▼
-     cairn sync                 ─ fetch artifacts, verify SHA-256, write provenance, FREEZE
-        │                          → site/<id>/vX.Y.Z/…  (write-once replica)
-        ▼
-     cairn build                ─ render landing pages, RDDL, catalog.json, sitemap,
-        │                          and the generated nginx routing → site/ + build/nginx/
-        ▼
-   nginx (:8080, plain HTTP)    ─ serves site/ behind OPF's TLS-terminating reverse proxy
+The registry is a set of YAML manifests. Three commands turn them into a served site:
+
+```text
+  standards/<id>/standard.yaml    the registry: identity, upstream source, releases, artifacts
+
+  1. cairn validate      check every manifest against schemas/standard.schema.json
+  2. cairn sync          fetch artifacts, verify SHA-256, record provenance, freeze
+                         (writes the write-once replica to site/<id>/vX.Y.Z/)
+  3. cairn build         render landing pages, RDDL, catalog.json, sitemap, nginx routes
+                         (writes site/ and build/nginx/cairn-routes.conf)
+
+  nginx (:8080, plain HTTP)       serves site/ behind the ingress layer
 ```
 
 ## Quick start
@@ -68,8 +65,8 @@ cairn validate            # lint every manifest
 cairn sync                # replicate + checksum upstream artifacts into site/
 cairn build               # render pages + routing into site/ and build/nginx/
 
-# serve it
-docker compose -f deploy/docker-compose.yml up --build
+# serve it locally (publishes 127.0.0.1:8080)
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up --build
 curl -i http://localhost:8080/eaf/v1.0.0/eaf.xsd
 ```
 
@@ -77,9 +74,29 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to add or update a standard.
 
 ## Deployment
 
-The container serves **plain HTTP on `:8080`** and expects OPF's existing reverse proxy to
-terminate TLS and forward to it. See [deploy/](deploy/) for the `Dockerfile`, `docker-compose.yml`,
-and an example upstream vhost.
+The stack is three small services around two shared volumes:
+
+- **syncer** replicates + renders into the volumes on a loop (every 6h by default), so a newly
+  merged standard appears without a manual rebuild. It reads manifests from the image-baked
+  copy, a bind-mounted checkout, or a `git clone` (`REPO_URL`) - see `deploy/docker-compose.yml`.
+- **web** (nginx) serves the volumes on `:8080` (plain HTTP), seeds them on first boot from a
+  baked snapshot, and reloads periodically to pick up new routes.
+- **cloudflared** (opt-in) provides ingress via a Cloudflare Tunnel: no inbound ports, TLS at
+  the edge.
+
+Ingress modes:
+
+```bash
+# Local testing (publishes 127.0.0.1:8080):
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up -d --build
+
+# Cloudflare Tunnel (no host ports; set CLOUDFLARE_TUNNEL_TOKEN in deploy/.env first):
+docker compose --profile tunnel up -d --build
+```
+
+If you would rather sit behind OPF's own TLS-terminating reverse proxy, point it at the
+internal `web:8080` (see `deploy/reverse-proxy.example.conf`) and skip the tunnel profile.
+See [deploy/](deploy/) for all of the above plus `.env.example`.
 
 ## Licence
 

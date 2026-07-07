@@ -17,15 +17,22 @@ RUN --mount=type=secret,id=github_token,required=false \
     sh -c 'export GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
            cairn validate && cairn sync && cairn build'
 
-# ---------- runtime stage: a small, static nginx ----------
+# ---------- runtime stage: a small nginx that seeds volumes and self-reloads ----------
 FROM nginx:1.27-alpine AS runtime
-RUN rm -f /etc/nginx/conf.d/default.conf
+RUN rm -f /etc/nginx/conf.d/default.conf \
+ && rm -rf /usr/share/nginx/html/* \
+ && mkdir -p /etc/nginx/cairn
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
-COPY --from=builder /work/build/nginx/cairn-routes.conf /etc/nginx/cairn/cairn-routes.conf
-COPY --from=builder /work/site/ /usr/share/nginx/html/
+COPY deploy/web-entrypoint.sh /usr/local/bin/web-entrypoint.sh
+RUN chmod +x /usr/local/bin/web-entrypoint.sh
+
+# Image-baked snapshot: seeds empty volumes on first boot so the site works before the
+# syncer's first run. The syncer later overwrites these with freshly-replicated content.
+COPY --from=builder /work/site/ /seed/
+COPY --from=builder /work/build/nginx/ /seed-conf/
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1
 
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/usr/local/bin/web-entrypoint.sh"]

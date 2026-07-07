@@ -5,17 +5,18 @@
   <p class="crumb"><a href="/">Standards</a> / {{ std.id }}</p>
   <h1>{{ std.title }}</h1>
   <p class="lede">{{ std.summary }}</p>
+  {% if std.based_on %}<p class="note">Based on {{ std.based_on }}.</p>{% endif %}
 
   <h2>Versions</h2>
   <ul class="cards">
     {% for ml in std.sorted_major_lines() %}
     <li class="card">
       <h3>Major line v{{ ml.major }} <span class="note">→ latest {{ ml.latest }}</span></h3>
-      <div class="kv">
+      <dl class="kv">
         <dt>Namespace</dt><dd><code>{{ std.namespace_for(ml.major) }}</code></dd>
         <dt>Namespace doc</dt><dd><a href="/{{ std.id }}/v{{ ml.major }}">/{{ std.id }}/v{{ ml.major }}</a> (RDDL)</dd>
         <dt>Latest release</dt><dd><a href="/{{ std.id }}/v{{ ml.latest }}">/{{ std.id }}/v{{ ml.latest }}</a></dd>
-      </div>
+      </dl>
     </li>
     {% endfor %}
   </ul>
@@ -26,7 +27,7 @@
   <h3 id="v{{ rel.version }}">
     <a href="/{{ std.id }}/v{{ rel.version }}">v{{ rel.version }}</a>
     <span class="badge {{ rel.status }}">{{ rel.status }}</span>
-    {% if rel.released %}<span class="note">— {{ rel.released }}</span>{% endif %}
+    {% if rel.released %}<span class="note">- {{ rel.released }}</span>{% endif %}
   </h3>
   <table class="files">
     <thead><tr><th>File</th><th>Type</th><th>Size</th></tr></thead>
@@ -46,11 +47,11 @@
   <div class="prose">{{ overview_html | safe }}</div>
 
   <h2>Steward &amp; links</h2>
-  <div class="kv">
+  <dl class="kv">
     <dt>Steward</dt><dd>{{ std.steward.org }}</dd>
     {% if std.steward.homepage %}<dt>Homepage</dt><dd><a href="{{ std.steward.homepage }}">{{ std.steward.homepage }}</a></dd>{% endif %}
     {% if std.steward.github %}<dt>Source</dt><dd><a href="{{ std.steward.github }}">{{ std.steward.github }}</a></dd>{% endif %}
     {% for link in std.links %}<dt>{{ link.label }}</dt><dd><a href="{{ link.url }}">{{ link.url }}</a></dd>{% endfor %}
     {% for c in std.steward.contacts %}<dt>Contact</dt><dd>{{ c }}</dd>{% endfor %}
-  </div>
+  </dl>
 {% endblock %}

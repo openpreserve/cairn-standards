@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+# The syncer: our Python tooling + git, run on a loop to keep the shared volumes current.
+FROM python:3.12-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir .
+
+# Baked copy of the registry, used when no repo is mounted or cloned.
+COPY schemas ./schemas
+COPY standards ./standards
+
+COPY deploy/sync-loop.sh /usr/local/bin/sync-loop.sh
+RUN chmod +x /usr/local/bin/sync-loop.sh
+
+# Default: operate on the baked /app checkout. Override REPO_DIR to a mount, or set
+# REPO_URL to clone. Outputs go to the shared volumes via these env vars.
+ENV REPO_DIR=/app \
+    CAIRN_SITE_DIR=/data/site \
+    CAIRN_ROUTES_FILE=/data/conf/cairn-routes.conf \
+    SYNC_INTERVAL=21600
+
+ENTRYPOINT ["/usr/local/bin/sync-loop.sh"]

@@ -17,8 +17,8 @@ source:
 links:
   - label: "EAD at the Library of Congress"
     url: "https://www.loc.gov/ead/"
-  - label: "EAS Tag Libraries"
-    url: "https://github.com/SAA-SDT/EAS-TagLibraries"
+  - label: "Tag Library (browse online)"
+    url: "https://saa-sdt.github.io/EAS-TagLibraries/"
   - label: "EAS Best Practices"
     url: "https://saa-sdt.github.io/EAS-Best-Practices/"
 
@@ -45,3 +45,10 @@ releases:
         from: repo
         path: xml-schemas/ead/ead.nvdl
         title: "EAD 4 NVDL validation dispatcher"
+      - name: ead-taglibrary.pdf
+        role: taglibrary-pdf
+        from: repo
+        repo: SAA-SDT/EAS-TagLibraries
+        ref: master
+        path: pdf/EAD4-TL-eng.pdf
+        title: "EAD 4 Tag Library (PDF)"

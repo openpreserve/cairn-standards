@@ -39,8 +39,8 @@ def cmd_validate(args) -> int:
     for std in standards:
         n_rel = len(std.releases)
         n_art = sum(len(r.artifacts) for r in std.releases)
-        print(f"  ✓ {std.id}: {std.title} — {n_rel} release(s), {n_art} artifact(s)")
-    print(f"OK — {len(standards)} manifest(s) valid.")
+        print(f"  ✓ {std.id}: {std.title} - {n_rel} release(s), {n_art} artifact(s)")
+    print(f"OK - {len(standards)} manifest(s) valid.")
     return 0
 
 

@@ -17,7 +17,7 @@ class _FakeResp:
 
 
 class _FakeClient:
-    """Returns fixed bytes for any GET — stands in for the network."""
+    """Returns fixed bytes for any GET - stands in for the network."""
 
     def __init__(self, content: bytes):
         self._c = content
