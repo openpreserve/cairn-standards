@@ -1,0 +1,24 @@
+name: cairn
+
+# The web service serves plain HTTP on :8080. In production, put OPF's existing
+# TLS-terminating reverse proxy in front of it (see reverse-proxy.example.conf).
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      # Uncomment to pass a GitHub token (higher API rate limits during sync):
+      # secrets: [github_token]
+    image: cairn-web:latest
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+# secrets:
+#   github_token:
+#     file: ./github_token.txt

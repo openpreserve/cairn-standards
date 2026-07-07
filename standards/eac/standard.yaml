@@ -1,0 +1,48 @@
+id: eac
+title: "Encoded Archival Context — Corporate Bodies, Persons, and Families (EAC-CPF)"
+summary: >-
+  An XML standard for encoding contextual information about the creators of
+  archival records — the corporate bodies, persons, and families behind them.
+
+steward:
+  org: "Technical Subcommittee on Encoded Archival Standards (TS-EAS), Society of American Archivists"
+  homepage: "https://eac.staatsbibliothek-berlin.de/"
+  github: "https://github.com/SAA-SDT/eas-schemas"
+
+# The public identifier is `eac`; upstream stores the files in the eac-cpf folder.
+source:
+  type: github
+  repo: SAA-SDT/eas-schemas
+  ref: release_2026_07
+
+links:
+  - label: "EAC-CPF home"
+    url: "https://eac.staatsbibliothek-berlin.de/"
+  - label: "EAS Tag Libraries"
+    url: "https://github.com/SAA-SDT/EAS-TagLibraries"
+  - label: "EAS Best Practices"
+    url: "https://saa-sdt.github.io/EAS-Best-Practices/"
+
+major_lines:
+  - major: 3
+    latest: 3.0.0
+
+releases:
+  - version: 3.0.0
+    status: draft
+    artifacts:
+      - name: eac.xsd
+        role: schema
+        from: repo
+        path: xml-schemas/eac-cpf/eac.xsd
+        title: "EAC-CPF W3C XML Schema"
+      - name: eac.rng
+        role: relaxng
+        from: repo
+        path: xml-schemas/eac-cpf/eac.rng
+        title: "EAC-CPF RELAX NG schema"
+      - name: eac.nvdl
+        role: nvdl
+        from: repo
+        path: xml-schemas/eac-cpf/eac.nvdl
+        title: "EAC-CPF NVDL validation dispatcher"

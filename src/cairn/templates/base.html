@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Cairn — Open Preservation standards{% endblock %}</title>
+  <meta name="description" content="{% block description %}Durable, resolvable hosting for preservation standards.{% endblock %}">
+  <link rel="stylesheet" href="/assets/cairn.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <span class="brand"><a href="/">Open Preservation Standards</a></span>
+      <span class="tag">standards.openpreservation.org</span>
+    </div>
+  </header>
+  <main>
+    <div class="wrap">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  <footer class="site">
+    <div class="wrap">
+      <span>Hosted by the <a href="https://openpreservation.org">Open Preservation Foundation</a>.</span>
+      <span>Built with Cairn {{ cairn_version }} · <a href="/catalog.json">catalog.json</a></span>
+    </div>
+  </footer>
+</body>
+</html>

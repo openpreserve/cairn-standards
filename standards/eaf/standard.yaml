@@ -1,0 +1,49 @@
+id: eaf
+title: "Encoded Archival Functions (EAF)"
+summary: >-
+  An XML standard for encoding descriptions of the functions and activities of
+  corporate bodies, persons, and families associated with archival records.
+
+steward:
+  org: "Technical Subcommittee on Encoded Archival Standards (TS-EAS), Society of American Archivists"
+  homepage: "https://www2.archivists.org/groups/technical-subcommittee-on-encoded-archival-standards-ts-eas"
+  github: "https://github.com/SAA-SDT/eas-schemas"
+
+# Where the artifacts really live. Cairn replicates from here; it does not store schema
+# bytes in this repo. `ref` is the pre-release branch until the official tag is cut.
+source:
+  type: github
+  repo: SAA-SDT/eas-schemas
+  ref: release_2026_07
+
+links:
+  - label: "EAS Tag Libraries"
+    url: "https://github.com/SAA-SDT/EAS-TagLibraries"
+  - label: "EAS Best Practices"
+    url: "https://saa-sdt.github.io/EAS-Best-Practices/"
+
+major_lines:
+  - major: 1
+    latest: 1.0.0
+
+releases:
+  # NOTE: `draft` = tracks the release_2026_07 branch and is re-synced each run.
+  # At the official release (end of July 2026) set status: stable and pin `ref:` to the tag.
+  - version: 1.0.0
+    status: draft
+    artifacts:
+      - name: eaf.xsd
+        role: schema
+        from: repo
+        path: xml-schemas/eaf/eaf.xsd
+        title: "EAF W3C XML Schema"
+      - name: eaf.rng
+        role: relaxng
+        from: repo
+        path: xml-schemas/eaf/eaf.rng
+        title: "EAF RELAX NG schema"
+      - name: eaf.nvdl
+        role: nvdl
+        from: repo
+        path: xml-schemas/eaf/eaf.nvdl
+        title: "EAF NVDL validation dispatcher"

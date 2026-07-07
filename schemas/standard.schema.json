@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://standards.openpreservation.org/schemas/standard.schema.json",
+  "title": "Cairn standard manifest",
+  "description": "Describes one hosted standard: its identity, upstream source, and the releases/artifacts Cairn replicates and serves.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "summary", "steward", "source", "major_lines", "releases"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "URL segment for the standard (must not encode the responsible organisation).",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+      "minLength": 2,
+      "maxLength": 40
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1, "description": "One or two sentences for the landing page and catalog." },
+    "steward": {
+      "type": "object",
+      "description": "The organisation responsible for the standard. Displayed, never part of the URL.",
+      "additionalProperties": false,
+      "required": ["org"],
+      "properties": {
+        "org": { "type": "string", "minLength": 1 },
+        "homepage": { "type": "string", "format": "uri" },
+        "github": { "type": "string", "format": "uri" },
+        "contacts": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "Default upstream location for artifacts. Individual artifacts may override the ref/path.",
+      "additionalProperties": false,
+      "required": ["type", "repo"],
+      "properties": {
+        "type": { "type": "string", "enum": ["github"] },
+        "repo": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$", "description": "owner/name" },
+        "ref": { "type": "string", "description": "Default git ref (branch or tag)." }
+      }
+    },
+    "links": {
+      "type": "array",
+      "description": "Extra links shown on the landing page (spec home, tag library, mailing list, ...).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "url"],
+        "properties": {
+          "label": { "type": "string" },
+          "url": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    "major_lines": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One entry per major version line; 'latest' is what /<id>/vN redirects to.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["major", "latest"],
+        "properties": {
+          "major": { "type": "integer", "minimum": 0 },
+          "latest": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+          "namespace": { "type": "string", "format": "uri", "description": "Optional explicit namespace URI; defaults to https://standards.openpreservation.org/<id>/vMAJOR." }
+        }
+      }
+    },
+    "releases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/release" }
+    }
+  },
+  "$defs": {
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "status", "artifacts"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "Semantic version served at /<id>/vX.Y.Z/." },
+        "ref": { "type": "string", "description": "Git ref for this release; overrides source.ref." },
+        "status": { "type": "string", "enum": ["stable", "beta", "alpha", "draft", "deprecated", "withdrawn"] },
+        "released": { "type": "string", "format": "date" },
+        "notes": { "type": "string" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "role", "from"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$", "description": "Filename to serve as, under the version folder." },
+        "role": {
+          "type": "string",
+          "enum": ["schema", "relaxng", "nvdl", "schematron", "taglibrary-html", "taglibrary-pdf", "documentation", "license", "other"],
+          "description": "Drives the RDDL nature and landing-page grouping."
+        },
+        "from": { "type": "string", "enum": ["repo", "release-asset", "github-pages", "url"] },
+        "path": { "type": "string", "description": "For from=repo/github-pages: path within the repo/site." },
+        "ref": { "type": "string", "description": "For from=repo: git ref override." },
+        "repo": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$", "description": "For from=repo/release-asset/github-pages: repo override (owner/name)." },
+        "asset": { "type": "string", "description": "For from=release-asset: asset filename or glob within the GitHub Release." },
+        "release_tag": { "type": "string", "description": "For from=release-asset: the GitHub Release tag (defaults to the release ref)." },
+        "url": { "type": "string", "format": "uri", "description": "For from=url: absolute download URL." },
+        "media_type": { "type": "string", "description": "Override the served Content-Type (else inferred from extension)." },
+        "title": { "type": "string", "description": "Human label for the landing page / RDDL." }
+      }
+    }
+  }
+}

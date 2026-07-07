@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Open Preservation Standards{% endblock %}
+{% block content %}
+  <h1>Open Preservation Standards</h1>
+  <p class="lede">Durable, citable, resolvable homes for the standards the preservation
+  community depends on. Each standard is replicated here with integrity checks and served
+  under a permanent URL scheme.</p>
+
+  {% if standards %}
+  <ul class="cards">
+    {% for std in standards %}
+    <li class="card">
+      <h3><a href="/{{ std.id }}">{{ std.title }}</a></h3>
+      <p>{{ std.summary }}</p>
+      <p class="meta">
+        Steward: {{ std.steward.org }} ·
+        {% for ml in std.sorted_major_lines() %}<a href="/{{ std.id }}/v{{ ml.major }}">v{{ ml.major }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+      </p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>No standards are published yet.</p>
+  {% endif %}
+
+  <h2>How versions resolve</h2>
+  <p>For a standard <code>x</code> with a major line <code>v1</code> and latest release <code>v1.0.0</code>:</p>
+  <table class="files">
+    <thead><tr><th>URL</th><th>Serves</th></tr></thead>
+    <tbody>
+      <tr><td><code>/x</code></td><td>This landing page</td></tr>
+      <tr><td><code>/x/v1</code></td><td>Namespace document (RDDL) for the v1 line</td></tr>
+      <tr><td><code>/x/v1/x.xsd</code></td><td>Redirects to the latest v1.x.y file</td></tr>
+      <tr><td><code>/x/v1.0.0</code></td><td>That exact release (with checksums)</td></tr>
+      <tr><td><code>/x/v1.0.0/x.xsd</code></td><td>The schema file itself</td></tr>
+    </tbody>
+  </table>
+{% endblock %}

@@ -1,0 +1,47 @@
+id: ead
+title: "Encoded Archival Description (EAD)"
+summary: >-
+  The international XML standard for encoding archival finding aids, enabling
+  consistent, machine-readable description of archival collections.
+
+steward:
+  org: "Technical Subcommittee on Encoded Archival Standards (TS-EAS), Society of American Archivists"
+  homepage: "https://www.loc.gov/ead/"
+  github: "https://github.com/SAA-SDT/eas-schemas"
+
+source:
+  type: github
+  repo: SAA-SDT/eas-schemas
+  ref: release_2026_07
+
+links:
+  - label: "EAD at the Library of Congress"
+    url: "https://www.loc.gov/ead/"
+  - label: "EAS Tag Libraries"
+    url: "https://github.com/SAA-SDT/EAS-TagLibraries"
+  - label: "EAS Best Practices"
+    url: "https://saa-sdt.github.io/EAS-Best-Practices/"
+
+major_lines:
+  - major: 4
+    latest: 4.0.0
+
+releases:
+  - version: 4.0.0
+    status: draft
+    artifacts:
+      - name: ead.xsd
+        role: schema
+        from: repo
+        path: xml-schemas/ead/ead.xsd
+        title: "EAD 4 W3C XML Schema"
+      - name: ead.rng
+        role: relaxng
+        from: repo
+        path: xml-schemas/ead/ead.rng
+        title: "EAD 4 RELAX NG schema"
+      - name: ead.nvdl
+        role: nvdl
+        from: repo
+        path: xml-schemas/ead/ead.nvdl
+        title: "EAD 4 NVDL validation dispatcher"

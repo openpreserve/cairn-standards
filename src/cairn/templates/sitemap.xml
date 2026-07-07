@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>{{ base_url }}/</loc></url>
+  {% for std in standards %}
+  <url><loc>{{ base_url }}/{{ std.id }}</loc></url>
+  {% for ml in std.sorted_major_lines() %}
+  <url><loc>{{ base_url }}/{{ std.id }}/v{{ ml.major }}</loc></url>
+  {% endfor %}
+  {% for rel in std.sorted_releases() %}
+  <url><loc>{{ base_url }}/{{ std.id }}/v{{ rel.version }}</loc></url>
+  {% endfor %}
+  {% endfor %}
+</urlset>

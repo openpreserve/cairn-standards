@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ std.title }} v{{ rel.version }}{% endblock %}
+{% block description %}{{ std.title }}, release {{ rel.version }} ({{ rel.status }}).{% endblock %}
+{% block content %}
+  <p class="crumb"><a href="/">Standards</a> / <a href="/{{ std.id }}">{{ std.id }}</a> / v{{ rel.version }}</p>
+  <h1>{{ std.title }} <span class="note">v{{ rel.version }}</span> <span class="badge {{ rel.status }}">{{ rel.status }}</span></h1>
+
+  <div class="kv">
+    <dt>Namespace</dt><dd><code>{{ std.namespace_for(rel.major) }}</code></dd>
+    <dt>Major line</dt><dd><a href="/{{ std.id }}/v{{ rel.major }}">/{{ std.id }}/v{{ rel.major }}</a> (tracks latest v{{ rel.major }}.x.y)</dd>
+    {% if rel.released %}<dt>Released</dt><dd>{{ rel.released }}</dd>{% endif %}
+  </div>
+
+  {% if notes_html %}
+  <h2>Release notes</h2>
+  <div class="prose">{{ notes_html | safe }}</div>
+  {% endif %}
+
+  <h2>Files</h2>
+  <table class="files">
+    <thead><tr><th>File</th><th>Type</th><th>Size</th><th>SHA-256</th></tr></thead>
+    <tbody>
+      {% for a in artifacts %}
+      <tr>
+        <td><a href="{{ a.url }}"><code>{{ a.name }}</code></a><br><span class="note">{{ a.title }}</span></td>
+        <td><code>{{ a.media_type }}</code></td>
+        <td>{{ a.bytes | humansize }}</td>
+        <td class="hash">{{ a.sha256 or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="note">Checksums are also published as
+    <a href="/{{ std.id }}/v{{ rel.version }}/SHA256SUMS"><code>SHA256SUMS</code></a>;
+    full fetch provenance is in
+    <a href="/{{ std.id }}/v{{ rel.version }}/provenance.json"><code>provenance.json</code></a>.</p>
+
+  <h2>Referencing these files</h2>
+  <p>Pin to this exact release:</p>
+  <div class="url-panel">{{ base_url }}/{{ std.id }}/v{{ rel.version }}/{{ artifacts[0].name if artifacts }}</div>
+  <p>Or track the latest {{ rel.major }}.x.y automatically:</p>
+  <div class="url-panel">{{ base_url }}/{{ std.id }}/v{{ rel.major }}/{{ artifacts[0].name if artifacts }}</div>
+{% endblock %}
