@@ -1,0 +1,182 @@
+# Promoting a release from draft to stable (freezing it)
+
+This is the step-by-step for taking a standard's release from `draft` (auto-tracking a
+branch) to a frozen, permanent release. It captures the gotchas that are easy to miss,
+because getting this wrong silently freezes the wrong bytes or the wrong provenance.
+
+If you only remember one thing: **flipping the status word is not enough.** You must also
+pin the git ref to a tag, and because the version was already synced as a draft you must
+clear its old replica so it re-freezes against that tag.
+
+---
+
+## Background: what "frozen" actually means
+
+Every release has a `status`. Only one value is treated as still-moving:
+
+```text
+draft  -> mutable: re-fetched and overwritten on every sync (tracks a branch)
+everything else (stable, beta, alpha, deprecated, withdrawn) -> frozen, write-once
+```
+
+This is defined by `MUTABLE_STATUSES = {"draft"}` in `src/cairn/sync.py`. A `draft`
+release pointed at a branch is pulled fresh every sync (the deployment syncs every 6h by
+default), so the served bytes follow the branch tip. A frozen release records its bytes,
+a SHA-256, and provenance once, and from then on sync skips it. If the upstream bytes at
+that ref ever change, a `--verify` sync fails loudly instead of silently following.
+
+"Fixed" is not a status value. The status you want at an official release is `stable`.
+
+---
+
+## The two edits that matter
+
+Take EAD 4.0.0 as the worked example. In `standards/ead/standard.yaml`:
+
+```yaml
+releases:
+  - version: 4.0.0
+    status: stable          # was: draft
+    ref: v4.0.0             # NEW: pin to the real git tag (was inheriting a branch)
+    released: 2026-07-31     # optional, good provenance
+    artifacts:
+      ...
+```
+
+1. **`status: draft` -> `status: stable`.** This is what makes the release write-once.
+
+2. **Pin `ref` to a tag.** This is the edit people forget. Before promotion the release
+   inherits `source.ref`, which points at a branch (for example `release_2026_07`).
+   Freezing against a branch is meaningless, because the branch keeps moving. A frozen
+   release must point at something immutable: a git tag, or a commit SHA. Add a `ref:` on
+   the release; it overrides `source.ref` for that release only.
+
+`released:` is optional but worth setting for provenance. It uses `YYYY-MM-DD` format.
+
+### Watch the per-artifact ref overrides
+
+An individual artifact can carry its own `ref`, which overrides everything else. In the
+EAD manifest the tag-library PDF does exactly this:
+
+```yaml
+      - name: ead-taglibrary.pdf
+        role: taglibrary-pdf
+        repo: SAA-SDT/EAS-TagLibraries
+        ref: master           # <- another moving branch
+        path: pdf/EAD4-TL-eng.pdf
+```
+
+That `ref: master` is a branch too. If you freeze the schemas but leave this pointing at
+`master`, the PDF source is still floating and the release is not fully frozen. Pin this
+artifact's `ref` to a tag or a specific commit SHA as well.
+
+Rule of thumb: after editing, scan the whole release for the word `ref` (at
+`source`, release, and artifact level) and make sure none of them name a branch.
+
+---
+
+## The re-freeze gotcha: why flipping the status is not enough
+
+A version that has been running as a `draft` has **already been synced**. Its replica
+exists on disk at `site/<id>/v<version>/`, including a `provenance.json` that records the
+bytes fetched from the branch (the wrong source for a frozen release).
+
+The freeze logic in `sync.py` checks for that prior provenance. When it finds it, it
+treats the version as already frozen and **skips the re-fetch entirely**. So if you just
+change the status and re-sync, you freeze the stale branch-era bytes and the sync records
+the branch (not your tag) as the source. The bytes might even be identical if the tag was
+cut from the branch tip, but the recorded provenance will still cite the branch, which is
+wrong for a permanent release.
+
+The fix: discard that version's replica so sync re-fetches cleanly from the tag. This is
+safe because `site/` is a regenerable build output that is not committed to git (it is in
+`.gitignore`).
+
+---
+
+## Local procedure
+
+After making the manifest edits above:
+
+```bash
+rm -rf site/ead/v4.0.0        # discard the draft-era replica so it re-freezes from the tag
+cairn validate                # check the manifest against the schema
+cairn sync --standard ead     # fetch from the tag, record checksum + tag provenance = the freeze
+cairn build                   # re-render landing pages, RDDL, catalog
+```
+
+With no prior provenance present, sync fetches from the tag, computes the SHA-256, and
+writes a fresh `provenance.json` citing the tag. That write is the freeze. Open
+`site/<id>/v<version>/provenance.json` afterwards and confirm the `ref` and `url` fields
+name your tag, not a branch.
+
+---
+
+## Open the pull request
+
+Commit only the manifest change. The `site/` output is regenerated by the deployment, so
+it is not part of the PR. CI validates the manifest and does a dry-run reachability sync.
+On merge, the publish workflow syncs, builds, and deploys.
+
+---
+
+## Production / deployment gotcha
+
+The same stale-draft problem exists in production, for the same reason. The deployed
+syncer writes into a persistent volume, and that volume already holds the draft-era
+replica of the version from the 6h sync loop. Flipping the manifest to `stable` does not
+by itself clear that stale replica.
+
+So after the manifest merges, the operator must do one of:
+
+- clear that version's folder from the syncer volume, so the next sync re-freezes it from
+  the tag (same reasoning as `rm -rf site/...` locally), or
+- run a `cairn sync --verify` against the volume to confirm the tag bytes match what was
+  frozen and surface any mismatch.
+
+Otherwise production keeps serving the draft-era provenance even though the manifest now
+says `stable`.
+
+---
+
+## After promotion: verify is your integrity guard
+
+Once a release is frozen, ordinary syncs skip it. The ongoing integrity check is:
+
+```bash
+cairn sync --verify
+```
+
+This re-fetches the frozen artifacts and compares them against the recorded SHA-256. If
+anyone ever re-tags upstream or mutates the bytes behind that ref, it fails loudly with
+`FROZEN VERSION CHANGED` rather than quietly serving different bytes. The intended
+response to that error is never to overwrite the release: cut a new version instead.
+
+---
+
+## Quick checklist
+
+- [ ] `status:` changed from `draft` to `stable`
+- [ ] release-level `ref:` pinned to a tag (or commit), not a branch
+- [ ] every per-artifact `ref:` in the release pinned to a tag or commit, not a branch
+- [ ] `released:` date set (optional but recommended)
+- [ ] stale replica cleared locally (`rm -rf site/<id>/v<version>`)
+- [ ] `cairn validate` clean
+- [ ] `cairn sync --standard <id>` re-fetched from the tag
+- [ ] `provenance.json` checked: `ref`/`url` name the tag, not a branch
+- [ ] `cairn build` run
+- [ ] PR opened with only the manifest change
+- [ ] production volume replica cleared or `--verify` run after merge
+
+---
+
+## Reference
+
+- Status values: `stable`, `beta`, `alpha`, `draft`, `deprecated`, `withdrawn`
+  (`schemas/standard.schema.json`).
+- Only `draft` is mutable; all others are write-once (`src/cairn/sync.py`,
+  `MUTABLE_STATUSES`).
+- Ref precedence (most specific wins): artifact `ref` > release `ref` > `source.ref`.
+- Freeze skip and the `FROZEN VERSION CHANGED` guard both live in
+  `sync_standard` in `src/cairn/sync.py`.
+- General "add or update a standard" guidance is in `CONTRIBUTING.md`.

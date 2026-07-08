@@ -12,7 +12,7 @@ There are two very different kinds of contribution:
 
 Everything about a standard lives in one folder:
 
-```
+```text
 standards/<id>/
 ├─ standard.yaml         # the manifest (identity, upstream source, releases, artifacts)
 └─ content/
@@ -71,6 +71,20 @@ YAML change ships a standard.
 - The **namespace** URL is major-only (`/<id>/vMAJOR`) and must stay stable across minor/patch
   releases. Never put minor/patch numbers in a namespace.
 - Withdrawn releases stay listed but are served as `410 Gone`. We do not delete history.
+
+Promoting a release from `draft` (tracking a branch) to `stable` (frozen) has a re-sync
+trap that can silently freeze the wrong bytes. Follow the runbook:
+[docs/promoting-a-draft-release.md](docs/promoting-a-draft-release.md).
+
+## Further reading
+
+More detailed guides live in [docs/](docs/README.md):
+
+- [Concepts and gotchas](docs/concepts-and-gotchas.md) - the non-obvious behaviour of the
+  URL contract, namespaces and content negotiation, statuses, freezing, artifact sources,
+  validation, caching, and deployment.
+- [Promoting a release from draft to stable](docs/promoting-a-draft-release.md) - freezing a
+  release safely.
 
 ## Changing the tooling
 
