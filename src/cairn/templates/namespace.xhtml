@@ -8,10 +8,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ std.title }} - namespace v{{ major }}</title>
   <link rel="stylesheet" href="/assets/cairn.css" />
+  <link rel="icon" href="/assets/cairn-mark.svg" type="image/svg+xml" />
 </head>
 <body>
+  {% include "_opf_banner.html" %}
   <header class="site"><div class="wrap">
-    <span class="brand"><a href="/">Open Preservation Standards</a></span>
+    <a class="brand" href="/">
+      <img class="brand-logo" src="/assets/cairn-mark.svg" width="24" height="24" alt="" />
+      <span>Open Preservation Standards</span>
+    </a>
     <span class="tag">namespace document</span>
   </div></header>
   <main><div class="wrap">
@@ -52,9 +57,6 @@
       which always resolves to the latest v{{ major }} release. To pin an exact version, use
       <code>/{{ std.id }}/v{{ latest.version }}/…</code>.</p>
   </div></main>
-  <footer class="site"><div class="wrap">
-    <span>Hosted by the <a href="https://openpreservation.org">Open Preservation Foundation</a>. · <a href="https://github.com/opf-labs/cairn-standards">Source</a></span>
-    <span>Namespace: <code>{{ namespace }}</code></span>
-  </div></footer>
+  {% include "_opf_footer.html" %}
 </body>
 </html>

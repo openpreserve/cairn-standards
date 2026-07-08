@@ -6,12 +6,17 @@
   <title>{% block title %}Cairn - Open Preservation standards{% endblock %}</title>
   <meta name="description" content="{% block description %}Durable, resolvable hosting for preservation standards.{% endblock %}">
   <link rel="stylesheet" href="/assets/cairn.css">
+  <link rel="icon" href="/assets/cairn-mark.svg" type="image/svg+xml">
   {% block head %}{% endblock %}
 </head>
 <body>
+  {% include "_opf_banner.html" %}
   <header class="site">
     <div class="wrap">
-      <span class="brand"><a href="/">Open Preservation Standards</a></span>
+      <a class="brand" href="/">
+        <img class="brand-logo" src="/assets/cairn-mark.svg" width="24" height="24" alt="" />
+        <span>Open Preservation Standards</span>
+      </a>
       <span class="tag">standards.openpreservation.org</span>
     </div>
   </header>
@@ -20,11 +25,6 @@
       {% block content %}{% endblock %}
     </div>
   </main>
-  <footer class="site">
-    <div class="wrap">
-      <span>Hosted by the <a href="https://openpreservation.org">Open Preservation Foundation</a>.</span>
-      <span>Built with Cairn {{ cairn_version }} · <a href="https://github.com/opf-labs/cairn-standards">Source</a> · <a href="/catalog.json">catalog.json</a></span>
-    </div>
-  </footer>
+  {% include "_opf_footer.html" %}
 </body>
 </html>

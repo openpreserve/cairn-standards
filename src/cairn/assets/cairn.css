@@ -29,9 +29,10 @@ header.site {
   border-bottom: 1px solid var(--line);
   background: var(--panel);
 }
-header.site .wrap { display: flex; align-items: baseline; gap: 14px; padding: 18px 20px; }
-header.site .brand { font-weight: 700; font-size: 1.15rem; color: var(--ink); }
-header.site .brand a { color: inherit; }
+header.site .wrap { display: flex; align-items: center; gap: 14px; padding: 18px 20px; }
+header.site .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.15rem; color: var(--ink); text-decoration: none; }
+header.site .brand:hover { text-decoration: none; }
+header.site .brand-logo { height: 24px; width: 24px; display: block; }
 header.site .tag { color: var(--muted); font-size: 0.9rem; }
 
 main { padding: 44px 0 80px; }
@@ -80,3 +81,65 @@ footer.site .wrap { display: flex; justify-content: space-between; gap: 12px; fl
 
 .prose :first-child { margin-top: 0; }
 .note { color: var(--muted); font-size: 0.9rem; }
+
+/* ---------------------------------------------------------------- OPF branding
+   "Powered by OPF" banner and the OPF dark footer, shared across every page and
+   the namespace (RDDL) documents. All assets are bundled under /assets, so there
+   are no external dependencies to break the durable serving guarantee. */
+
+.opf-bar {
+  background: #43318f url("/assets/opf-banner-bg.jpg") center / cover no-repeat;
+}
+.opf-bar .wrap { padding-top: 0; padding-bottom: 0; }
+.opf-bar-inner {
+  display: flex; align-items: center; gap: 14px;
+  min-height: 84px; color: #fff; text-decoration: none;
+}
+.opf-bar-inner:hover { text-decoration: none; }
+.opf-bar-logo { height: 60px; width: auto; display: block; }
+.opf-bar-text {
+  font-weight: 700; font-size: 1.05rem; letter-spacing: 0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+.opf-footer { background: #343a40; color: #f8f9fa; font-size: 0.9rem; }
+.opf-footer a { color: #ced4da; }
+.opf-footer a:hover { color: #fff; }
+.opf-footer-grid {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px;
+  padding-top: 44px; padding-bottom: 22px; align-items: start;
+}
+.opf-foot-col p { margin: 0 0 10px; }
+.opf-foot-licence { text-align: center; align-self: center; color: #adb5bd; }
+.opf-foot-brand { text-align: right; }
+.opf-foot-logo { height: 56px; width: auto; margin-bottom: 12px; }
+.opf-foot-links {
+  list-style: none; padding: 0; margin: 12px 0 0;
+  display: flex; flex-wrap: wrap; gap: 18px;
+}
+.opf-foot-contact .opf-foot-links { justify-content: flex-start; }
+.opf-foot-brand .opf-foot-links { justify-content: flex-end; }
+.opf-foot-links a { text-decoration: underline; }
+.opf-social {
+  list-style: none; padding: 0; margin: 4px 0 0;
+  display: flex; gap: 16px; justify-content: flex-end;
+}
+.opf-social a { display: inline-flex; color: #f8f9fa; }
+.opf-social a:hover { color: #d5107c; }
+.opf-icon { width: 20px; height: 20px; fill: currentColor; display: block; }
+.opf-colophon {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding-top: 16px; padding-bottom: 26px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  color: #adb5bd; font-size: 0.82rem;
+}
+.opf-colophon a { color: #ced4da; }
+
+@media (max-width: 720px) {
+  .opf-footer-grid { grid-template-columns: 1fr; gap: 22px; text-align: center; }
+  .opf-foot-brand, .opf-foot-licence { text-align: center; }
+  .opf-foot-contact .opf-foot-links,
+  .opf-foot-brand .opf-foot-links,
+  .opf-social { justify-content: center; }
+  .opf-colophon { justify-content: center; text-align: center; }
+}
