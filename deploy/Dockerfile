@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# ---------- build stage: replicate upstream artifacts + render the static site ----------
-FROM python:3.12-slim AS builder
+# ---------- build stage: replicate upstream artifacts + render the static site ----------.
+FROM python:3.12-slim-bullseye AS builder
 WORKDIR /work
 
 # Install the tooling first (layer caches until deps change).
