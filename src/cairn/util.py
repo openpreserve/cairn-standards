@@ -50,4 +50,9 @@ def media_type_for(name: str, override: str | None = None) -> str:
 
 def semver_key(version: str) -> tuple[int, int, int]:
     parts = version.split(".")
-    return (int(parts[0]), int(parts[1]), int(parts[2]))
+    if len(parts) != 3:
+        raise ValueError(f"expected X.Y.Z version, got {version!r}")
+    try:
+        return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        raise ValueError(f"expected X.Y.Z version, got {version!r}")

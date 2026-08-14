@@ -99,9 +99,13 @@ def _humansize(n: int | None) -> str:
 
 def _load_provenance(root: Path, std_id: str, version: str) -> dict | None:
     path = site_dir(root) / std_id / f"v{version}" / "provenance.json"
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return None
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 _RAW_PREFIX = "https://raw.githubusercontent.com/"
@@ -123,7 +127,7 @@ def _github_link(source: dict | None) -> str | None:
 
 def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
     prov = _load_provenance(root, std.id, rel.version)
-    prov_arts = {a["name"]: a for a in prov["artifacts"]} if prov else {}
+    prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
     views = []
     for art in rel.artifacts:
         p = prov_arts.get(art.name, {})
@@ -256,7 +260,7 @@ def render_site(standards: list[Standard], root: Path, log=print) -> None:
 def _render_catalog(standards: list[Standard], root: Path) -> str:
     def artifact_json(std, rel):
         prov = _load_provenance(root, std.id, rel.version)
-        prov_arts = {a["name"]: a for a in prov["artifacts"]} if prov else {}
+        prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
         out = []
         for art in rel.artifacts:
             p = prov_arts.get(art.name, {})
