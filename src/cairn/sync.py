@@ -81,7 +81,10 @@ def resolve(std: Standard, rel: Release, art: Artifact, client: httpx.Client) ->
         resp = client.get(api)
         if resp.status_code != 200:
             raise SyncError(f"{std.id} {rel.version} {art.name}: cannot read release {tag} ({resp.status_code})")
-        assets = resp.json().get("assets", [])
+        try:
+            assets = resp.json().get("assets", [])
+        except Exception:
+            raise SyncError(f"{std.id} {rel.version} {art.name}: GitHub API returned non-JSON for release {tag}")
         matches = [a for a in assets if a["name"] == art.asset or fnmatch.fnmatch(a["name"], art.asset)]
         if not matches:
             available = ", ".join(a["name"] for a in assets) or "(none)"
