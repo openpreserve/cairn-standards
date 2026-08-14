@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,6 +104,35 @@ def _resolve_commit(repo: str, ref: str, client: httpx.Client) -> str | None:
     return None
 
 
+def _load_prior_provenance(prov_path: Path) -> dict | None:
+    """Load provenance.json, returning None on any parse or structural error."""
+    if not prov_path.exists():
+        return None
+    try:
+        data = json.loads(prov_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("artifacts"), list):
+        return None
+    return data
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write bytes to path via a temp file in the same directory, then rename."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent)
+    try:
+        os.write(fd, data)
+        os.close(fd)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def _fetch(url: str, client: httpx.Client) -> bytes:
     resp = client.get(url)
     if resp.status_code != 200:
@@ -130,7 +161,7 @@ def sync_standard(
     for rel in std.releases:
         vdir = site_dir(root) / std.id / f"v{rel.version}"
         prov_path = vdir / "provenance.json"
-        prior = json.loads(prov_path.read_text(encoding="utf-8")) if prov_path.exists() else None
+        prior = _load_prior_provenance(prov_path)
         prior_arts = {a["name"]: a for a in prior["artifacts"]} if prior else {}
 
         records: list[dict] = []
@@ -157,7 +188,7 @@ def sync_standard(
             data = _fetch(resolved.url, client)
             digest = sha256_hex(data)
 
-            if frozen and not mutable and digest != frozen.get("sha256"):
+            if frozen and not mutable and frozen.get("sha256") and digest != frozen["sha256"]:
                 raise SyncError(
                     f"FROZEN VERSION CHANGED: {std.id} v{rel.version}/{art.name}\n"
                     f"  recorded sha256 {frozen.get('sha256')}\n"
@@ -166,9 +197,11 @@ def sync_standard(
                 )
 
             if is_frozen and verify:
-                stats.verified += 1
-                records.append(frozen)
-                continue
+                if frozen.get("sha256"):
+                    stats.verified += 1
+                    records.append(frozen)
+                    continue
+                # No hash was ever recorded - fall through to compute and store it
 
             commit = None
             if resolved.repo and resolved.ref:
@@ -178,7 +211,7 @@ def sync_standard(
                 commit = commit_cache[key]
 
             vdir.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            _atomic_write(dest, data)
             records.append(
                 {
                     "name": art.name,
@@ -202,6 +235,18 @@ def sync_standard(
         if dry_run:
             continue
 
+        # Remove artifacts that were in the last recorded provenance but are no longer
+        # in the manifest. Only files we previously wrote are candidates - this avoids
+        # touching render output (index.html) or anything else that sync didn't create.
+        if prior:
+            current_names = {art.name for art in rel.artifacts}
+            old_names = {a["name"] for a in prior["artifacts"]}
+            for orphan_name in old_names - current_names:
+                orphan = vdir / orphan_name
+                if orphan.exists():
+                    orphan.unlink()
+                    log(f"  [del]  {std.id} v{rel.version}/{orphan_name}")
+
         vdir.mkdir(parents=True, exist_ok=True)
         provenance = {
             "standard": std.id,
@@ -211,9 +256,9 @@ def sync_standard(
             "updated_at": _now(),
             "artifacts": records,
         }
-        prov_path.write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
+        _atomic_write(prov_path, (json.dumps(provenance, indent=2) + "\n").encode())
         sums = "".join(f"{r['sha256']}  {r['name']}\n" for r in records)
-        (vdir / "SHA256SUMS").write_text(sums, encoding="utf-8")
+        _atomic_write(vdir / "SHA256SUMS", sums.encode())
 
     return stats
 
