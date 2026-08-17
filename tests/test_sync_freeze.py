@@ -129,14 +129,19 @@ def test_frozen_record_without_sha256_does_not_raise_false_positive(tmp_path):
     assert prov["artifacts"][0]["sha256"] == sha256_hex(b"DATA")
 
 
-def test_orphaned_artifact_is_removed(tmp_path):
-    """A file in provenance that is no longer in the manifest should be deleted on next sync."""
-    _seed(tmp_path, b"OLD", artifact_name="old.xsd")
+def test_orphaned_artifact_is_removed_from_a_draft(tmp_path):
+    """A file in provenance that is no longer in the manifest should be deleted on next sync.
+
+    Only while the release is still mutable - a draft's bytes are not published promises.
+    """
+    _seed(tmp_path, b"OLD", status="draft", artifact_name="old.xsd")
     orphan = tmp_path / "site" / "demo" / "v1.0.0" / "old.xsd"
     assert orphan.exists()
 
     new_artifact = Artifact(name="new.xsd", role="schema", from_="repo", path="new.xsd")
-    sync_standard(_std(artifacts=[new_artifact]), tmp_path, _FakeClient(b"NEW"), log=lambda *a: None)
+    sync_standard(
+        _std(status="draft", artifacts=[new_artifact]), tmp_path, _FakeClient(b"NEW"), log=lambda *a: None
+    )
 
     assert not orphan.exists(), "orphaned artifact should have been removed"
     assert (tmp_path / "site" / "demo" / "v1.0.0" / "new.xsd").exists()
@@ -150,6 +155,40 @@ def test_provenance_written_atomically(tmp_path):
     prov_path = tmp_path / "site" / "demo" / "v1.0.0" / "provenance.json"
     prov = json.loads(prov_path.read_text())
     assert prov["artifacts"][0]["name"] == "demo.xsd"
+
+
+# --- write-once guards ---
+
+def test_dropping_an_artifact_from_a_frozen_release_is_rejected(tmp_path):
+    """Unpublishing a frozen artifact breaks the URL contract as surely as changing its bytes.
+
+    `/demo/v1.0.0/old.xsd` has been handed out and may be cited in a schema import. Deleting
+    the file answers 404 where it used to answer 200, so the manifest edit is refused and the
+    published file is left alone.
+    """
+    _seed(tmp_path, b"PUBLISHED", status="stable", artifact_name="old.xsd")
+    published = tmp_path / "site" / "demo" / "v1.0.0" / "old.xsd"
+
+    kept = Artifact(name="new.xsd", role="schema", from_="repo", path="new.xsd")
+    with pytest.raises(SyncError, match="FROZEN VERSION LOST AN ARTIFACT"):
+        sync_standard(
+            _std(status="stable", artifacts=[kept]), tmp_path, _FakeClient(b"NEW"), log=lambda *a: None
+        )
+
+    assert published.exists(), "a frozen release's published artifact must survive"
+
+
+def test_withdrawn_release_may_drop_artifacts(tmp_path):
+    """`withdrawn` is the deliberate way to unpublish, so reaping is allowed there."""
+    _seed(tmp_path, b"GONE", status="withdrawn", artifact_name="old.xsd")
+    orphan = tmp_path / "site" / "demo" / "v1.0.0" / "old.xsd"
+
+    kept = Artifact(name="new.xsd", role="schema", from_="repo", path="new.xsd")
+    sync_standard(
+        _std(status="withdrawn", artifacts=[kept]), tmp_path, _FakeClient(b"NEW"), log=lambda *a: None
+    )
+
+    assert not orphan.exists()
 
 
 @pytest.mark.parametrize("name", ["demo.xsd", "provenance.json", "SHA256SUMS"])

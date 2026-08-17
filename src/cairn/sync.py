@@ -253,10 +253,24 @@ def sync_standard(
         # Remove artifacts that were in the last recorded provenance but are no longer
         # in the manifest. Only files we previously wrote are candidates - this avoids
         # touching render output (index.html) or anything else that sync didn't create.
+        #
+        # Reaping is confined to releases whose bytes are still allowed to move. Deleting a
+        # file from a frozen release turns a published 200 into a 404, which breaks the same
+        # write-once promise as changing its bytes, so that case is refused rather than
+        # applied. Withdrawn releases are exempt: they are deliberately unpublished (410).
         if prior:
             current_names = {art.name for art in rel.artifacts}
             old_names = {a["name"] for a in prior["artifacts"]}
-            for orphan_name in old_names - current_names:
+            orphans = sorted(old_names - current_names)
+            if orphans and not mutable and rel.is_served:
+                raise SyncError(
+                    f"FROZEN VERSION LOST AN ARTIFACT: {std.id} v{rel.version}\n"
+                    f"  no longer in the manifest: {', '.join(orphans)}\n"
+                    f"  status is '{rel.status}', so these URLs are already published and must\n"
+                    f"  keep resolving. Restore the artifact entries, or cut a new version.\n"
+                    f"  To unpublish on purpose, set status: withdrawn (serves 410)."
+                )
+            for orphan_name in orphans:
                 orphan = vdir / orphan_name
                 if orphan.exists():
                     orphan.unlink()
