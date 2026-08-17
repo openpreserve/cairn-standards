@@ -1,16 +1,22 @@
 name: publish
 
-# On merge to main: build and publish both deployment images to GHCR.
+# Build and publish both deployment images to GHCR.
 #
 # Two images, because the stack needs both and they age independently:
 #   web    - nginx plus an image-baked site snapshot used to seed empty volumes
 #   syncer - the Python tooling that replicates upstream and re-renders on a loop
 #
-# The syncer is where sync/render code actually runs in production, so publishing only web
-# left no route from a merged fix to the running service.
+# The syncer is where sync and render code actually runs in production, so publishing only
+# web left no route from a merged fix to the running service.
+#
+# Pushing a v* tag is the release path: it produces version-tagged images (v0.2.0 ->
+# 0.2.0 and 0.2) that a deployment can pin to via CAIRN_TAG, which is what you want for a
+# service whose promise is that published bytes do not move. Pushes to main keep producing
+# :latest and a commit-sha tag for continuous deployment.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -32,19 +38,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Keeps the historical untagged-repo image name so anything already pulling
-      # ghcr.io/<repo>:latest is unaffected.
+      - name: Image metadata (web)
+        id: meta_web
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/web
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest
+
       - name: Build and push web
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/Dockerfile
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: ${{ steps.meta_web.outputs.tags }}
+          labels: ${{ steps.meta_web.outputs.labels }}
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (syncer)
+        id: meta_syncer
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/syncer
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest
 
       # No build secret: this image only installs the tooling, it does not replicate at
       # build time the way the web image's builder stage does.
@@ -54,6 +79,5 @@ jobs:
           context: .
           file: deploy/Dockerfile.syncer
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}/syncer:latest
-            ghcr.io/${{ github.repository }}/syncer:${{ github.sha }}
+          tags: ${{ steps.meta_syncer.outputs.tags }}
+          labels: ${{ steps.meta_syncer.outputs.labels }}

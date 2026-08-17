@@ -1,18 +1,19 @@
 # Deploy from the images published by .github/workflows/publish.yml instead of building
 # on the host. Without this overlay the base compose file always builds locally, which
-# means the running stack is whatever was last built on that machine rather than whatever
-# is on main.
+# means the running stack is whatever was last built on that machine rather than a known
+# release.
 #
-# Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
-#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+# Usage, pinned to a release (preferred):
+#   CAIRN_TAG=0.2.0 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+#   CAIRN_TAG=0.2.0 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
 #
-# Pin to a commit instead of :latest by exporting CAIRN_TAG=<sha> first, which is the
-# safer habit for a service whose whole promise is that published bytes do not move.
+# CAIRN_TAG accepts anything the publish workflow produces: a release version (0.2.0),
+# a minor line (0.2), a full commit sha, or latest. Pinning a version is the safer habit
+# for a service whose whole promise is that published bytes do not move.
 services:
   web:
     build: !reset null
-    image: ghcr.io/openpreserve/cairn-standards:${CAIRN_TAG:-latest}
+    image: ghcr.io/openpreserve/cairn-standards/web:${CAIRN_TAG:-latest}
 
   syncer:
     build: !reset null
