@@ -7,9 +7,17 @@
 #   CAIRN_TAG=0.2.0 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
 #   CAIRN_TAG=0.2.0 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
 #
-# CAIRN_TAG accepts anything the publish workflow produces: a release version (0.2.0),
-# a minor line (0.2), a full commit sha, or latest. Pinning a version is the safer habit
-# for a service whose whole promise is that published bytes do not move.
+# CAIRN_TAG accepts exactly what the publish workflow produces:
+#   0.2.0              a release, from a v0.2.0 git tag
+#   0.2                the minor line, moves with each patch release
+#   sha-<40 hex>       a specific commit; note the `sha-` prefix, a bare sha is not a tag
+#   latest             newest build of the default branch only, never set by a release tag
+# Pinning a release is the safer habit for a service whose whole promise is that published
+# bytes do not move.
+#
+# Both packages are created by the first publish run and default to private, so the host
+# needs either the packages set to public or a `docker login ghcr.io` with a read token
+# before the pull below will succeed.
 services:
   web:
     build: !reset null

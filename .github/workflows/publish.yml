@@ -43,11 +43,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}/web
+          # latest=auto would add `latest` to any semver tag, which is the rollback this
+          # guards against; the raw entry below is the only thing that sets it.
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push web
         uses: docker/build-push-action@v6
@@ -65,11 +68,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}/syncer
+          # latest=auto would add `latest` to any semver tag, which is the rollback this
+          # guards against; the raw entry below is the only thing that sets it.
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
 
       # No build secret: this image only installs the tooling, it does not replicate at
       # build time the way the web image's builder stage does.
