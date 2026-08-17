@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The write-once check below builds a worktree of the base branch, which a shallow
+          # clone cannot provide.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -20,6 +24,16 @@ jobs:
 
       - name: Validate manifests
         run: cairn validate
+
+      # Write-once is a property of the manifest *diff*, so it is checked here, against the
+      # branch being merged into, rather than only in the syncer. Enforcing it solely at
+      # replication time meant a change that unpublishes a live URL merged green and failed
+      # on the deployment instead, where nobody is watching and the site stops updating.
+      - name: Write-once check against the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git worktree add /tmp/baseline "origin/${{ github.base_ref }}"
+          cairn validate --baseline /tmp/baseline
 
       - name: Unit tests
         run: pytest -q

@@ -19,6 +19,12 @@ class ManifestError(Exception):
     """Raised when a manifest is structurally or semantically invalid."""
 
 
+# Releases with these statuses are still moving (e.g. tracking a pre-release branch): they
+# are re-fetched and overwritten on every sync rather than frozen. Everything else is
+# write-once - a released version's bytes must never change.
+MUTABLE_STATUSES = {"draft"}
+
+
 # --------------------------------------------------------------------------- models
 
 
@@ -275,6 +281,49 @@ def load_standard(directory: Path, validator: Draft202012Validator | None = None
             f"{manifest_file}: consistency checks failed:\n" + "\n".join(f"  - {e}" for e in sem_errors)
         )
     return std
+
+
+def compare_to_baseline(current: list[Standard], baseline: list[Standard]) -> list[str]:
+    """Report edits that would break an already-published URL.
+
+    Write-once is a property of a manifest *edit*, so it is checkable the moment the edit is
+    proposed, against the manifests as they were before it. Enforcing it only in the syncer
+    means the offending change merges green and fails on the deployment instead, where the
+    person who can fix it is not looking and the site has already stopped updating.
+
+    A release is treated as published once its baseline status is anything but `draft`.
+    `withdrawn` is exempt because that status unpublishes a release deliberately.
+    """
+    errors: list[str] = []
+    baseline_by_id = {s.id: s for s in baseline}
+
+    for std in current:
+        was = baseline_by_id.get(std.id)
+        if was is None:
+            continue
+        for old_rel in was.releases:
+            if old_rel.status in MUTABLE_STATUSES or not old_rel.is_served:
+                continue
+            new_rel = std.release(old_rel.version)
+            if new_rel is None:
+                errors.append(
+                    f"{std.id} v{old_rel.version}: release was '{old_rel.status}' and is now gone. "
+                    f"Published versions must stay in the manifest."
+                )
+                continue
+            lost = sorted({a.name for a in old_rel.artifacts} - {a.name for a in new_rel.artifacts})
+            if lost:
+                errors.append(
+                    f"{std.id} v{old_rel.version}: artifact(s) removed from a published release: "
+                    f"{', '.join(lost)}. Those URLs are live; publish the change as a new version."
+                )
+            if new_rel.ref != old_rel.ref:
+                errors.append(
+                    f"{std.id} v{old_rel.version}: ref changed from {old_rel.ref!r} to "
+                    f"{new_rel.ref!r} on a published release. Repointing a frozen version at "
+                    f"different bytes is what versioning exists to prevent."
+                )
+    return errors
 
 
 def load_all(root: Path) -> list[Standard]:
