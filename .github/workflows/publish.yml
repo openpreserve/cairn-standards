@@ -1,6 +1,13 @@
 name: publish
 
-# On merge to main: replicate + render inside the image and publish it to GHCR.
+# On merge to main: build and publish both deployment images to GHCR.
+#
+# Two images, because the stack needs both and they age independently:
+#   web    - nginx plus an image-baked site snapshot used to seed empty volumes
+#   syncer - the Python tooling that replicates upstream and re-renders on a loop
+#
+# The syncer is where sync/render code actually runs in production, so publishing only web
+# left no route from a merged fix to the running service.
 on:
   push:
     branches: [main]
@@ -25,7 +32,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      # Keeps the historical untagged-repo image name so anything already pulling
+      # ghcr.io/<repo>:latest is unaffected.
+      - name: Build and push web
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -36,3 +45,15 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.sha }}
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
+
+      # No build secret: this image only installs the tooling, it does not replicate at
+      # build time the way the web image's builder stage does.
+      - name: Build and push syncer
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.syncer
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/syncer:latest
+            ghcr.io/${{ github.repository }}/syncer:${{ github.sha }}
