@@ -22,7 +22,9 @@ services:
     expose:
       - "8080"
     environment:
-      RELOAD_INTERVAL: "21600"        # reload nginx every 6h to pick up new routes
+      # nginx reloads when the generated routes actually change, checked every RELOAD_POLL
+      # seconds (default 60, defined in deploy/web-entrypoint.sh). Uncomment to override.
+      # RELOAD_POLL: "60"
     volumes:
       - site_data:/usr/share/nginx/html
       - routes_data:/etc/nginx/cairn
