@@ -40,6 +40,7 @@ services:
     image: cairn-syncer:latest
     environment:
       SYNC_INTERVAL: "21600"          # resync every 6h
+      VERIFY_INTERVAL: "86400"        # re-check frozen versions against upstream every 24h
       # --- Manifest source (pick one; default uses the image-baked registry) ---
       # git-pull mode: clone + pull the repo so NEW standards are picked up automatically.
       #   REPO_URL: "https://github.com/OPF-ORG/cairn-standards.git"
