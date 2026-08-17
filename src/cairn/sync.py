@@ -35,6 +35,12 @@ API_BASE = "https://api.github.com"
 # is write-once - a released version's bytes must never change.
 MUTABLE_STATUSES = {"draft"}
 
+# Everything sync writes is read by nginx running as an unprivileged user out of a shared
+# volume, and nginx answers 403 for a file it cannot open. `tempfile.mkstemp` creates 0600
+# and `os.replace` carries that mode onto the destination, so the mode is set explicitly
+# rather than left to the temp file's default.
+PUBLISHED_MODE = 0o644
+
 
 class SyncError(Exception):
     pass
@@ -121,17 +127,23 @@ def _load_prior_provenance(prov_path: Path) -> dict | None:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    """Write bytes to path via a temp file in the same directory, then rename."""
+    """Write bytes to path via a temp file in the same directory, then rename.
+
+    The mode is widened to PUBLISHED_MODE before the rename: these files are served by
+    nginx as an unprivileged user, and mkstemp's 0600 default would make every one of
+    them a 403.
+    """
     fd, tmp = tempfile.mkstemp(dir=path.parent)
+    closed = False
     try:
         os.write(fd, data)
+        os.fchmod(fd, PUBLISHED_MODE)
         os.close(fd)
+        closed = True
         os.replace(tmp, path)
     except Exception:
-        try:
+        if not closed:
             os.close(fd)
-        except OSError:
-            pass
         Path(tmp).unlink(missing_ok=True)
         raise
 
@@ -241,10 +253,24 @@ def sync_standard(
         # Remove artifacts that were in the last recorded provenance but are no longer
         # in the manifest. Only files we previously wrote are candidates - this avoids
         # touching render output (index.html) or anything else that sync didn't create.
+        #
+        # Reaping is confined to releases whose bytes are still allowed to move. Deleting a
+        # file from a frozen release turns a published 200 into a 404, which breaks the same
+        # write-once promise as changing its bytes, so that case is refused rather than
+        # applied. Withdrawn releases are exempt: they are deliberately unpublished (410).
         if prior:
             current_names = {art.name for art in rel.artifacts}
             old_names = {a["name"] for a in prior["artifacts"]}
-            for orphan_name in old_names - current_names:
+            orphans = sorted(old_names - current_names)
+            if orphans and not mutable and rel.is_served:
+                raise SyncError(
+                    f"FROZEN VERSION LOST AN ARTIFACT: {std.id} v{rel.version}\n"
+                    f"  no longer in the manifest: {', '.join(orphans)}\n"
+                    f"  status is '{rel.status}', so these URLs are already published and must\n"
+                    f"  keep resolving. Restore the artifact entries, or cut a new version.\n"
+                    f"  To unpublish on purpose, set status: withdrawn (serves 410)."
+                )
+            for orphan_name in orphans:
                 orphan = vdir / orphan_name
                 if orphan.exists():
                     orphan.unlink()

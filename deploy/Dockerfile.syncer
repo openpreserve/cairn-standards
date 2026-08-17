@@ -23,6 +23,7 @@ RUN chmod +x /usr/local/bin/sync-loop.sh
 ENV REPO_DIR=/app \
     CAIRN_SITE_DIR=/data/site \
     CAIRN_ROUTES_FILE=/data/conf/cairn-routes.conf \
-    SYNC_INTERVAL=21600
+    SYNC_INTERVAL=21600 \
+    VERIFY_INTERVAL=86400
 
 ENTRYPOINT ["/usr/local/bin/sync-loop.sh"]
