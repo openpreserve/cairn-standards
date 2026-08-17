@@ -35,6 +35,12 @@ API_BASE = "https://api.github.com"
 # is write-once - a released version's bytes must never change.
 MUTABLE_STATUSES = {"draft"}
 
+# Everything sync writes is read by nginx running as an unprivileged user out of a shared
+# volume, and nginx answers 403 for a file it cannot open. `tempfile.mkstemp` creates 0600
+# and `os.replace` carries that mode onto the destination, so the mode is set explicitly
+# rather than left to the temp file's default.
+PUBLISHED_MODE = 0o644
+
 
 class SyncError(Exception):
     pass
@@ -121,17 +127,23 @@ def _load_prior_provenance(prov_path: Path) -> dict | None:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    """Write bytes to path via a temp file in the same directory, then rename."""
+    """Write bytes to path via a temp file in the same directory, then rename.
+
+    The mode is widened to PUBLISHED_MODE before the rename: these files are served by
+    nginx as an unprivileged user, and mkstemp's 0600 default would make every one of
+    them a 403.
+    """
     fd, tmp = tempfile.mkstemp(dir=path.parent)
+    closed = False
     try:
         os.write(fd, data)
+        os.fchmod(fd, PUBLISHED_MODE)
         os.close(fd)
+        closed = True
         os.replace(tmp, path)
     except Exception:
-        try:
+        if not closed:
             os.close(fd)
-        except OSError:
-            pass
         Path(tmp).unlink(missing_ok=True)
         raise
 

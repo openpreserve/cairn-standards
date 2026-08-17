@@ -1,4 +1,5 @@
 import json
+import stat
 
 import pytest
 
@@ -149,3 +150,15 @@ def test_provenance_written_atomically(tmp_path):
     prov_path = tmp_path / "site" / "demo" / "v1.0.0" / "provenance.json"
     prov = json.loads(prov_path.read_text())
     assert prov["artifacts"][0]["name"] == "demo.xsd"
+
+
+@pytest.mark.parametrize("name", ["demo.xsd", "provenance.json", "SHA256SUMS"])
+def test_synced_files_are_readable_by_the_web_server(tmp_path, name):
+    """nginx workers run unprivileged and answer 403 for anything they cannot open.
+
+    mkstemp creates 0600 and os.replace preserves it, so without an explicit chmod every
+    file sync writes becomes a 403 the moment the syncer image is rebuilt.
+    """
+    sync_standard(_std(status="draft"), tmp_path, _FakeClient(b"BYTES"), log=lambda *a: None)
+    mode = (tmp_path / "site" / "demo" / "v1.0.0" / name).stat().st_mode
+    assert mode & stat.S_IROTH, f"{name} is {oct(mode & 0o777)} - the web server cannot read it"
