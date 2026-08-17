@@ -19,7 +19,7 @@ draft  -> mutable: re-fetched and overwritten on every sync (tracks a branch)
 everything else (stable, beta, alpha, deprecated, withdrawn) -> frozen, write-once
 ```
 
-This is defined by `MUTABLE_STATUSES = {"draft"}` in `src/cairn/sync.py`. A `draft`
+This is defined by `MUTABLE_STATUSES = {"draft"}` in `src/cairn/manifest.py`. A `draft`
 release pointed at a branch is pulled fresh every sync (the deployment syncs every 6h by
 default), so the served bytes follow the branch tip. A frozen release records its bytes,
 a SHA-256, and provenance once, and from then on sync skips it. If the upstream bytes at
@@ -186,9 +186,11 @@ response to that error is never to overwrite the release: cut a new version inst
 
 - Status values: `stable`, `beta`, `alpha`, `draft`, `deprecated`, `withdrawn`
   (`schemas/standard.schema.json`).
-- Only `draft` is mutable; all others are write-once (`src/cairn/sync.py`,
+- Only `draft` is mutable; all others are write-once (`src/cairn/manifest.py`,
   `MUTABLE_STATUSES`).
-- Ref precedence (most specific wins): artifact `ref` > release `ref` > `source.ref`.
-- Freeze skip and the `FROZEN VERSION CHANGED` guard both live in
-  `sync_standard` in `src/cairn/sync.py`.
+- Ref precedence (most specific wins): artifact `ref` > release `ref` > `source.ref`. Defined
+  once in `artifact_locator` (`src/cairn/manifest.py`) and used by both the fetch and the
+  write-once check, so the two cannot disagree.
+- Freezing is checked in the plan phase (`_plan_release` in `src/cairn/sync.py`) before
+  anything is written, and again on pull requests via `cairn validate --baseline`.
 - General "add or update a standard" guidance is in `CONTRIBUTING.md`.

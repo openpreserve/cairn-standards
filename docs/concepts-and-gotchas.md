@@ -90,7 +90,23 @@ Gotchas:
 Once a non-draft release is synced, its bytes, SHA-256, and provenance are recorded and the
 version is frozen. Later syncs skip it. `cairn sync --verify` re-fetches frozen versions and
 fails loudly with `FROZEN VERSION CHANGED` if the upstream bytes behind that ref ever move
-(re-tagging or tampering). The fix is always to cut a new version, never to overwrite.
+(re-tagging or tampering). The fix is always to cut a new version, never to overwrite. In a
+deployment this runs on its own every `VERIFY_INTERVAL`; you do not have to remember it.
+
+Freezing is enforced in two places, on purpose:
+
+- **On the pull request**, by `cairn validate --baseline <checkout>`, which compares your
+  manifests against the branch you are merging into and refuses anything that would break a
+  published URL: removing an artifact or a release, reverting a release to `draft`, or
+  repointing where an artifact comes from. This is where a violation should be caught, because
+  the person who can fix it is looking at it.
+- **In the syncer**, as the last line of defence, in case something reached a deployment
+  anyway.
+
+A refusal in the syncer never leaves a half-applied change. Each release is resolved, fetched
+and checked in full before a single byte is written, so a rejected plan leaves the served
+directory exactly as it was. (Earlier versions checked after writing, which published files
+that no provenance record ever mentioned.)
 
 The non-obvious part is what happens when you promote a version that was previously a draft:
 the old draft replica is already on disk, so a naive re-sync freezes the stale bytes and the
@@ -151,6 +167,18 @@ the schema cannot express. A manifest can be perfectly schema-valid and still fa
 
 If `validate` complains about something that "looks fine" against the schema, it is almost
 certainly one of these.
+
+There is a third layer that only runs when you ask for it, and it needs a second checkout to
+compare against:
+
+```bash
+git worktree add /tmp/baseline origin/main
+cairn validate --baseline /tmp/baseline
+```
+
+This is the write-once check described above. It is not part of a plain `cairn validate`
+because it is a property of a *change*, not of a manifest: the same file can be perfectly
+valid and still be an illegal edit. CI runs it on every pull request against the base branch.
 
 ## Versions are strict three-part semver
 

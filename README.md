@@ -47,13 +47,20 @@ The registry is a set of YAML manifests. Three commands turn them into a served 
   standards/<id>/standard.yaml    the registry: identity, upstream source, releases, artifacts
 
   1. cairn validate      check every manifest against schemas/standard.schema.json
+                         (--baseline <checkout> also refuses edits that would break a
+                          URL already published, which is what CI runs on a PR)
   2. cairn sync          fetch artifacts, verify SHA-256, record provenance, freeze
-                         (writes the write-once replica to site/<id>/vX.Y.Z/)
+                         (writes the write-once replica to site/<id>/vX.Y.Z/;
+                          --verify re-checks frozen versions against upstream)
   3. cairn build         render landing pages, RDDL, catalog.json, sitemap, nginx routes
                          (writes site/ and build/nginx/cairn-routes.conf)
 
   nginx (:8080, plain HTTP)       serves site/ behind the ingress layer
 ```
+
+Each release is planned in full before anything is written: every artifact is resolved,
+fetched and checked, and only a plan that breaks no promises is committed to disk. A refused
+change leaves the served directory exactly as it was.
 
 ## Quick start
 
@@ -79,6 +86,10 @@ The stack is three small services around two shared volumes:
 - **syncer** replicates + renders into the volumes on a loop (every 6h by default), so a newly
   merged standard appears without a manual rebuild. It reads manifests from the image-baked
   copy, a bind-mounted checkout, or a `git clone` (`REPO_URL`) - see `deploy/docker-compose.yml`.
+  Every 24h (`VERIFY_INTERVAL`) that cycle runs as `cairn sync --verify`, re-reading the bytes
+  behind frozen versions so an upstream re-tag is caught rather than going unnoticed. A
+  standard that fails is reported and skipped; the others still sync and the site still
+  re-renders.
 - **web** (nginx) serves the volumes on `:8080` (plain HTTP), seeds them on first boot from a
   baked snapshot, and reloads periodically to pick up new routes.
 - **cloudflared** (opt-in) provides ingress via a Cloudflare Tunnel: no inbound ports, TLS at
