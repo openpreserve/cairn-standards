@@ -57,11 +57,31 @@ cairn build                    # render everything
 frozen. If upstream later changes the bytes at a released version, sync will **refuse** and flag
 it (re-tagging/tampering). Cut a new version instead.
 
+A refusal never leaves the served directory half-changed. Each release is planned in full and
+checked before anything is written, so a rejected edit changes nothing on disk.
+
 ### 4. Open a pull request
 
-CI validates every manifest and does a dry-run sync (reachability) on your PR. Once merged, the
-publish workflow syncs, builds, and deploys. That's the whole burden-reducing point: a reviewed
-YAML change ships a standard.
+CI validates every manifest, checks your changes against the base branch for anything that
+would break an already-published URL, runs the unit tests, and does a dry-run sync
+(reachability). Once merged, the publish workflow builds and pushes both deployment images.
+That's the whole burden-reducing point: a reviewed YAML change ships a standard.
+
+The write-once check is the one most likely to stop you, and it is deliberate. Against the base
+branch, these are refused on any release that is already published (anything not `draft`):
+
+- removing an artifact, or removing the release itself - those URLs are live
+- reverting the status to `draft` - that would let later syncs overwrite published bytes
+- repointing where an artifact comes from (`path`, `repo`, `ref`, or an inherited `source.ref`)
+  - same URL, different bytes
+
+All of them have the same fix: leave the published version alone and add a new one. Run it
+yourself before pushing:
+
+```bash
+git worktree add /tmp/baseline origin/main
+cairn validate --baseline /tmp/baseline
+```
 
 ## Versioning rules
 

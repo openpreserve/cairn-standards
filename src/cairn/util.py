@@ -1,13 +1,21 @@
-"""Small shared helpers: HTTP client, hashing, MIME inference, semver."""
+"""Small shared helpers: HTTP client, hashing, MIME inference, semver, durable writes."""
 
 from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
+from pathlib import Path
 
 import httpx
 
 from . import __version__
+
+# Everything written into the document root is read by nginx running as an unprivileged
+# user, and nginx answers 403 for a file it cannot open. `tempfile.mkstemp` creates 0600
+# and `os.replace` carries that mode onto the destination, so the mode is set explicitly
+# rather than inherited from the temp file's default.
+PUBLISHED_MODE = 0o644
 
 USER_AGENT = f"cairn/{__version__} (+https://standards.openpreservation.org)"
 
@@ -38,6 +46,45 @@ def http_client() -> httpx.Client:
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    """Write bytes via a temp file in the same directory, then rename over the target.
+
+    Every write into the document root goes through here, so a reader never observes a
+    partial file: the syncer can be killed mid-cycle and the render step rewrites pages in
+    place while nginx is serving them.
+
+    `os.fdopen` takes ownership of the descriptor so it is closed exactly once, including
+    when the write itself fails. Closing it twice by hand would raise EBADF from the second
+    attempt, masking the real error and skipping the temp-file cleanup.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp, PUBLISHED_MODE)
+        os.replace(tmp, path)
+    except Exception:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def ensure_published_mode(path: Path) -> bool:
+    """Widen *path* to PUBLISHED_MODE if it is not already readable by the web server.
+
+    Frozen artifacts are never rewritten, so a file left unreadable by an earlier bug would
+    stay a 403 forever. Repairing it here costs one stat per sync and needs no re-fetch.
+    Returns True when a change was made.
+    """
+    try:
+        current = path.stat().st_mode & 0o777
+    except OSError:
+        return False
+    if current == PUBLISHED_MODE:
+        return False
+    path.chmod(PUBLISHED_MODE)
+    return True
 
 
 def media_type_for(name: str, override: str | None = None) -> str:

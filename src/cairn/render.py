@@ -15,6 +15,7 @@ from . import BASE_URL, __version__
 from .config import site_dir
 from .manifest import Release, Standard
 from .nginx import write_routes
+from .util import atomic_write
 
 ROLE_LABELS = {
     "schema": "W3C XML Schema (XSD)",
@@ -173,8 +174,11 @@ def _release_notes_html(std: Standard, rel: Release) -> str | None:
 
 
 def _write(path: Path, content: str) -> None:
+    # Atomic because nginx serves this directory while the render runs, and the syncer that
+    # invokes the render can be killed mid-cycle. A plain write_text can leave a truncated
+    # page in the document root, which then gets served until the next successful build.
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    atomic_write(path, content.encode("utf-8"))
 
 
 def _copy_assets(site: Path) -> None:
@@ -183,7 +187,7 @@ def _copy_assets(site: Path) -> None:
     pkg_assets = resources.files("cairn") / "assets"
     for entry in pkg_assets.iterdir():
         if entry.is_file():
-            (assets_dir / entry.name).write_bytes(entry.read_bytes())
+            atomic_write(assets_dir / entry.name, entry.read_bytes())
 
 
 def render_site(standards: list[Standard], root: Path, log=print) -> None:

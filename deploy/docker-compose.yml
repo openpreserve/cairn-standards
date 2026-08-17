@@ -21,10 +21,10 @@ services:
     # Host publishing is added by docker-compose.local.yml for local testing.
     expose:
       - "8080"
-    environment:
-      # nginx reloads when the generated routes actually change, checked every RELOAD_POLL
-      # seconds (default 60, defined in deploy/web-entrypoint.sh). Uncomment to override.
-      # RELOAD_POLL: "60"
+    # nginx reloads when the generated routes actually change, checked every RELOAD_POLL
+    # seconds (default 60, defined in deploy/web-entrypoint.sh). To override, add:
+    #   environment:
+    #     RELOAD_POLL: "60"
     volumes:
       - site_data:/usr/share/nginx/html
       - routes_data:/etc/nginx/cairn
@@ -41,8 +41,10 @@ services:
       dockerfile: deploy/Dockerfile.syncer
     image: cairn-syncer:latest
     environment:
-      SYNC_INTERVAL: "21600"          # resync every 6h
-      VERIFY_INTERVAL: "86400"        # re-check frozen versions against upstream every 24h
+      # Cadence defaults (6h sync, 24h integrity re-check) live in deploy/sync-loop.sh.
+      # Uncomment to override; leaving them unset keeps one source of truth.
+      # SYNC_INTERVAL: "21600"
+      # VERIFY_INTERVAL: "86400"
       # --- Manifest source (pick one; default uses the image-baked registry) ---
       # git-pull mode: clone + pull the repo so NEW standards are picked up automatically.
       #   REPO_URL: "https://github.com/OPF-ORG/cairn-standards.git"

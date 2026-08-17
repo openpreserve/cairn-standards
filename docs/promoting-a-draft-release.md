@@ -19,7 +19,7 @@ draft  -> mutable: re-fetched and overwritten on every sync (tracks a branch)
 everything else (stable, beta, alpha, deprecated, withdrawn) -> frozen, write-once
 ```
 
-This is defined by `MUTABLE_STATUSES = {"draft"}` in `src/cairn/sync.py`. A `draft`
+This is defined by `MUTABLE_STATUSES = {"draft"}` in `src/cairn/manifest.py`. A `draft`
 release pointed at a branch is pulled fresh every sync (the deployment syncs every 6h by
 default), so the served bytes follow the branch tip. A frozen release records its bytes,
 a SHA-256, and provenance once, and from then on sync skips it. If the upstream bytes at
@@ -137,11 +137,23 @@ So after the manifest merges, the operator must do one of:
 Otherwise production keeps serving the draft-era provenance even though the manifest now
 says `stable`.
 
+**This is no longer optional, and it is now time-limited.** The syncer runs
+`cairn sync --verify` by itself every `VERIFY_INTERVAL` (24h by default), and on the first
+cycle after any restart. If the branch tip moved between the last draft sync and the tag you
+pinned to, that automatic verify compares the tag's bytes against the branch-era hashes still
+recorded in the volume, fails with `FROZEN VERSION CHANGED`, and keeps failing every cycle
+until someone clears the replica. Do the clear as part of the promotion, not afterwards.
+
+To check in advance whether you are exposed, compare the two refs before merging: if the
+files are byte-identical at the branch and at the tag, the recorded hashes still match and
+the automatic verify will pass.
+
 ---
 
 ## After promotion: verify is your integrity guard
 
-Once a release is frozen, ordinary syncs skip it. The ongoing integrity check is:
+Once a release is frozen, ordinary syncs skip it. The integrity check runs automatically in
+the deployment every `VERIFY_INTERVAL`, and can be run by hand with:
 
 ```bash
 cairn sync --verify
@@ -174,9 +186,11 @@ response to that error is never to overwrite the release: cut a new version inst
 
 - Status values: `stable`, `beta`, `alpha`, `draft`, `deprecated`, `withdrawn`
   (`schemas/standard.schema.json`).
-- Only `draft` is mutable; all others are write-once (`src/cairn/sync.py`,
+- Only `draft` is mutable; all others are write-once (`src/cairn/manifest.py`,
   `MUTABLE_STATUSES`).
-- Ref precedence (most specific wins): artifact `ref` > release `ref` > `source.ref`.
-- Freeze skip and the `FROZEN VERSION CHANGED` guard both live in
-  `sync_standard` in `src/cairn/sync.py`.
+- Ref precedence (most specific wins): artifact `ref` > release `ref` > `source.ref`. Defined
+  once in `artifact_locator` (`src/cairn/manifest.py`) and used by both the fetch and the
+  write-once check, so the two cannot disagree.
+- Freezing is checked in the plan phase (`_plan_release` in `src/cairn/sync.py`) before
+  anything is written, and again on pull requests via `cairn validate --baseline`.
 - General "add or update a standard" guidance is in `CONTRIBUTING.md`.

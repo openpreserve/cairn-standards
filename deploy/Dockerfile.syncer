@@ -20,10 +20,12 @@ RUN chmod +x /usr/local/bin/sync-loop.sh
 
 # Default: operate on the baked /app checkout. Override REPO_DIR to a mount, or set
 # REPO_URL to clone. Outputs go to the shared volumes via these env vars.
+#
+# SYNC_INTERVAL and VERIFY_INTERVAL are deliberately not set here. Their defaults live in
+# sync-loop.sh alone; repeating them would mean the cadence depends on whether the container
+# was started via compose or run directly, and a change to one file would silently not apply.
 ENV REPO_DIR=/app \
     CAIRN_SITE_DIR=/data/site \
-    CAIRN_ROUTES_FILE=/data/conf/cairn-routes.conf \
-    SYNC_INTERVAL=21600 \
-    VERIFY_INTERVAL=86400
+    CAIRN_ROUTES_FILE=/data/conf/cairn-routes.conf
 
 ENTRYPOINT ["/usr/local/bin/sync-loop.sh"]

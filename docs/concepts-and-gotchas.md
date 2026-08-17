@@ -90,7 +90,23 @@ Gotchas:
 Once a non-draft release is synced, its bytes, SHA-256, and provenance are recorded and the
 version is frozen. Later syncs skip it. `cairn sync --verify` re-fetches frozen versions and
 fails loudly with `FROZEN VERSION CHANGED` if the upstream bytes behind that ref ever move
-(re-tagging or tampering). The fix is always to cut a new version, never to overwrite.
+(re-tagging or tampering). The fix is always to cut a new version, never to overwrite. In a
+deployment this runs on its own every `VERIFY_INTERVAL`; you do not have to remember it.
+
+Freezing is enforced in two places, on purpose:
+
+- **On the pull request**, by `cairn validate --baseline <checkout>`, which compares your
+  manifests against the branch you are merging into and refuses anything that would break a
+  published URL: removing an artifact or a release, reverting a release to `draft`, or
+  repointing where an artifact comes from. This is where a violation should be caught, because
+  the person who can fix it is looking at it.
+- **In the syncer**, as the last line of defence, in case something reached a deployment
+  anyway.
+
+A refusal in the syncer never leaves a half-applied change. Each release is resolved, fetched
+and checked in full before a single byte is written, so a rejected plan leaves the served
+directory exactly as it was. (Earlier versions checked after writing, which published files
+that no provenance record ever mentioned.)
 
 The non-obvious part is what happens when you promote a version that was previously a draft:
 the old draft replica is already on disk, so a naive re-sync freezes the stale bytes and the
@@ -152,6 +168,18 @@ the schema cannot express. A manifest can be perfectly schema-valid and still fa
 If `validate` complains about something that "looks fine" against the schema, it is almost
 certainly one of these.
 
+There is a third layer that only runs when you ask for it, and it needs a second checkout to
+compare against:
+
+```bash
+git worktree add /tmp/baseline origin/main
+cairn validate --baseline /tmp/baseline
+```
+
+This is the write-once check described above. It is not part of a plain `cairn validate`
+because it is a property of a *change*, not of a manifest: the same file can be perfectly
+valid and still be an illegal edit. CI runs it on every pull request against the base branch.
+
 ## Versions are strict three-part semver
 
 A version must be exactly `MAJOR.MINOR.PATCH`, all integers. There is no support for
@@ -202,6 +230,32 @@ the volumes; nginx serves those volumes. What that means in practice:
   standard requires a new image (via the publish workflow) and a redeploy.
 - **First boot is seeded.** The web container seeds an empty volume from a snapshot baked
   into the image, so the site works immediately, before the syncer's first cycle.
+- **Frozen versions are re-checked on their own timer.** Every `VERIFY_INTERVAL` (24h by
+  default), and on the first cycle after any restart, the syncer runs `cairn sync --verify`
+  instead of a plain sync. This re-fetches frozen artifacts and compares them against the
+  recorded SHA-256, because an ordinary sync skips them entirely and would never notice an
+  upstream re-tag. The stamp for this lives next to the routes file so it survives restarts.
+
+### When a cycle fails
+
+A failure is reported per standard, not per run. `cairn sync` replicates every standard it
+can, records the ones that failed, and exits non-zero; the loop still runs `cairn build`, so
+one broken upstream does not stop the rest of the registry reaching the site.
+
+Two errors mean a write-once promise was about to be broken, and both leave the published
+files untouched:
+
+- `FROZEN VERSION CHANGED` - the bytes upstream no longer match what was recorded for a
+  frozen version. Usually a moved tag. The fix is upstream: cut a new tag, and publish it as
+  a new version here.
+- `FROZEN VERSION LOST AN ARTIFACT` - the manifest no longer declares a file that is already
+  published at a frozen URL. Restore the artifact entry, or publish the change as a new
+  version. `cairn validate --baseline <checkout>` catches this on a pull request, which is
+  where it should be caught; reaching the syncer means it was merged.
+
+A failing verify is logged with an `INTEGRITY CHECK FAILED` marker and is deliberately not
+stamped, so the next cycle retries rather than waiting a full interval. That marker is the
+one worth alerting on.
 
 ## A `GITHUB_TOKEN` is optional but recommended
 

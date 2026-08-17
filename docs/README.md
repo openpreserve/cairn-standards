@@ -25,6 +25,15 @@ here go deeper on the parts that are easy to get wrong.
   [Promoting a release from draft to stable](promoting-a-draft-release.md).
 - **Understand why a URL behaves the way it does** - see
   [Concepts and gotchas](concepts-and-gotchas.md).
+- **A pull request failed the write-once check** - the edit would change or remove a URL that
+  is already published. See
+  [Write-once freezing](concepts-and-gotchas.md#write-once-freezing-and-the-re-sync-trap) for
+  what is refused and why, and the [CONTRIBUTING guide](../CONTRIBUTING.md) for how to run the
+  same check locally before pushing.
+- **A deployment logged `INTEGRITY CHECK FAILED`** - the daily re-check found that upstream
+  bytes behind a frozen version no longer match what was recorded. Nothing published has been
+  altered; see
+  [When a cycle fails](concepts-and-gotchas.md#when-a-cycle-fails).
 
 ## About this folder
 
