@@ -91,7 +91,9 @@ The stack is three small services around two shared volumes:
   standard that fails is reported and skipped; the others still sync and the site still
   re-renders.
 - **web** (nginx) serves the volumes on `:8080` (plain HTTP), seeds them on first boot from a
-  baked snapshot, and reloads periodically to pick up new routes.
+  baked snapshot, and reloads within a minute of the generated routes changing. nginx runs as
+  PID 1, so if it dies the container exits and the restart policy brings it back rather than
+  leaving a container that is up but serving nothing.
 - **cloudflared** (opt-in) provides ingress via a Cloudflare Tunnel: no inbound ports, TLS at
   the edge.
 

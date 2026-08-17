@@ -210,11 +210,20 @@ the volumes; nginx serves those volumes. What that means in practice:
 - **Updated content appears on its own.** New or re-synced files, re-rendered landing pages,
   and an updated `catalog.json` are served as soon as the syncer writes them. nginx needs no
   reload for content.
-- **New routes need an nginx reload.** A brand-new standard, a new major line, or a new
-  `410` for a withdrawal are *routing* changes. nginx only picks these up on reload, which
-  happens on its own timer (every six hours). So a newly merged standard can have its files
-  in the volume before its namespace and redirect routes are live. If `/<newstandard>` is
-  `404` right after a merge, this is usually why.
+- **New routes need an nginx reload, which happens on change.** A brand-new standard, a new
+  major line, or a new `410` for a withdrawal are *routing* changes, and nginx only picks
+  those up on reload. The web container watches the generated routes file and reloads within
+  `RELOAD_POLL` seconds (60 by default) of it changing, so a new standard is reachable
+  shortly after the syncer writes it rather than at the next fixed interval. A routes file
+  that fails `nginx -t` is not loaded: the previous config keeps serving and the failure is
+  logged, then retried on the next poll once corrected.
+- **If nginx dies, the container exits on purpose.** nginx runs as PID 1 via `exec`, so its
+  death is the container's exit and `restart: unless-stopped` restarts it. It also handles
+  its own signals, and the base image's `STOPSIGNAL SIGQUIT` means `docker compose stop`
+  drains connections gracefully instead of timing out and being killed. (Running it as a
+  background daemon under a shell loop, as this once did, left a container that Docker
+  considered up while nothing was serving, because restart policies react to exit codes, not
+  to the healthcheck.)
 - **Whether a new standard is even picked up depends on the syncer's manifest source.** In
   git-pull or bind-mount mode the syncer sees new manifests automatically. In the default
   image-baked mode it only knows the standards baked into the image, so a genuinely new
