@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import find_root
-from .manifest import ManifestError, load_all
+from .manifest import ManifestError, compare_to_baseline, load_all
 from .render import render_site
 from .sync import SyncError, sync_all
 
@@ -40,6 +40,22 @@ def cmd_validate(args) -> int:
         n_rel = len(std.releases)
         n_art = sum(len(r.artifacts) for r in std.releases)
         print(f"  ✓ {std.id}: {std.title} - {n_rel} release(s), {n_art} artifact(s)")
+
+    if args.baseline:
+        baseline_root = find_root(args.baseline)
+        breaks = compare_to_baseline(standards, load_all(baseline_root))
+        if breaks:
+            sys.stdout.flush()  # keep the report below the per-standard lines above
+            print(f"\nWRITE-ONCE VIOLATION - {len(breaks)} problem(s) against {baseline_root}:", file=sys.stderr)
+            for line in breaks:
+                print(f"  - {line}", file=sys.stderr)
+            print(
+                "\nThese edits would change or remove URLs that are already published.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"  ✓ no write-once violations against {baseline_root}")
+
     print(f"OK - {len(standards)} manifest(s) valid.")
     return 0
 
@@ -58,7 +74,16 @@ def cmd_sync(args) -> int:
     if args.dry_run:
         print(f"Dry run: {stats.planned} artifact(s) resolved.")
     else:
-        print(f"Done: {stats.fetched} fetched, {stats.verified} verified, {stats.skipped} frozen/skipped.")
+        summary = f"Done: {stats.fetched} fetched, {stats.verified} verified, {stats.skipped} frozen/skipped"
+        if stats.repaired:
+            summary += f", {stats.repaired} permission(s) repaired"
+        print(summary + ".")
+
+    if stats.failures:
+        print(f"\n{len(stats.failures)} standard(s) FAILED:", file=sys.stderr)
+        for std_id, message in stats.failures:
+            print(f"\n--- {std_id} ---\n{message}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -71,10 +96,12 @@ def cmd_build(args) -> int:
 
 
 def cmd_all(args) -> int:
-    rc = cmd_sync(args)
-    if rc:
-        return rc
-    return cmd_build(args)
+    # Render even when a standard failed to sync. The standards that did sync are on disk and
+    # should reach the site; withholding the render because of an unrelated failure would
+    # freeze the whole site at its last good state. The non-zero exit still propagates.
+    sync_rc = cmd_sync(args)
+    build_rc = cmd_build(args)
+    return sync_rc or build_rc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,6 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_val = sub.add_parser("validate", help="Validate all manifests.")
     _add_root(p_val)
+    p_val.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help="Workspace to compare against (e.g. a checkout of main). Fails if the current "
+        "manifests remove or repoint anything already published.",
+    )
     p_val.set_defaults(func=cmd_validate)
 
     p_sync = sub.add_parser("sync", help="Replicate + checksum upstream artifacts.")
