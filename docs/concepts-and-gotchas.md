@@ -193,6 +193,32 @@ the volumes; nginx serves those volumes. What that means in practice:
   standard requires a new image (via the publish workflow) and a redeploy.
 - **First boot is seeded.** The web container seeds an empty volume from a snapshot baked
   into the image, so the site works immediately, before the syncer's first cycle.
+- **Frozen versions are re-checked on their own timer.** Every `VERIFY_INTERVAL` (24h by
+  default), and on the first cycle after any restart, the syncer runs `cairn sync --verify`
+  instead of a plain sync. This re-fetches frozen artifacts and compares them against the
+  recorded SHA-256, because an ordinary sync skips them entirely and would never notice an
+  upstream re-tag. The stamp for this lives next to the routes file so it survives restarts.
+
+### When a cycle fails
+
+A failure is reported per standard, not per run. `cairn sync` replicates every standard it
+can, records the ones that failed, and exits non-zero; the loop still runs `cairn build`, so
+one broken upstream does not stop the rest of the registry reaching the site.
+
+Two errors mean a write-once promise was about to be broken, and both leave the published
+files untouched:
+
+- `FROZEN VERSION CHANGED` - the bytes upstream no longer match what was recorded for a
+  frozen version. Usually a moved tag. The fix is upstream: cut a new tag, and publish it as
+  a new version here.
+- `FROZEN VERSION LOST AN ARTIFACT` - the manifest no longer declares a file that is already
+  published at a frozen URL. Restore the artifact entry, or publish the change as a new
+  version. `cairn validate --baseline <checkout>` catches this on a pull request, which is
+  where it should be caught; reaching the syncer means it was merged.
+
+A failing verify is logged with an `INTEGRITY CHECK FAILED` marker and is deliberately not
+stamped, so the next cycle retries rather than waiting a full interval. That marker is the
+one worth alerting on.
 
 ## A `GITHUB_TOKEN` is optional but recommended
 

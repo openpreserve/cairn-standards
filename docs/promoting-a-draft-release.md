@@ -137,11 +137,23 @@ So after the manifest merges, the operator must do one of:
 Otherwise production keeps serving the draft-era provenance even though the manifest now
 says `stable`.
 
+**This is no longer optional, and it is now time-limited.** The syncer runs
+`cairn sync --verify` by itself every `VERIFY_INTERVAL` (24h by default), and on the first
+cycle after any restart. If the branch tip moved between the last draft sync and the tag you
+pinned to, that automatic verify compares the tag's bytes against the branch-era hashes still
+recorded in the volume, fails with `FROZEN VERSION CHANGED`, and keeps failing every cycle
+until someone clears the replica. Do the clear as part of the promotion, not afterwards.
+
+To check in advance whether you are exposed, compare the two refs before merging: if the
+files are byte-identical at the branch and at the tag, the recorded hashes still match and
+the automatic verify will pass.
+
 ---
 
 ## After promotion: verify is your integrity guard
 
-Once a release is frozen, ordinary syncs skip it. The ongoing integrity check is:
+Once a release is frozen, ordinary syncs skip it. The integrity check runs automatically in
+the deployment every `VERIFY_INTERVAL`, and can be run by hand with:
 
 ```bash
 cairn sync --verify
