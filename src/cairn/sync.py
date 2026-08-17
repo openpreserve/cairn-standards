@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 
 from .config import site_dir
-from .manifest import MUTABLE_STATUSES, Artifact, Release, Standard
+from .manifest import MUTABLE_STATUSES, Artifact, Release, Standard, artifact_locator
 from .util import atomic_write, ensure_published_mode, http_client, sha256_hex
 
 RAW_BASE = "https://raw.githubusercontent.com"
@@ -50,9 +50,14 @@ def _repo_owner_name(repo: str) -> tuple[str, str]:
 
 
 def resolve(std: Standard, rel: Release, art: Artifact, client: httpx.Client) -> Resolved:
-    """Turn an artifact declaration into a concrete download URL."""
-    repo = art.repo or std.source.repo
-    ref = art.ref or rel.ref or std.source.ref
+    """Turn an artifact declaration into a concrete download URL.
+
+    Precedence comes from `artifact_locator` rather than being restated here, so the
+    write-once check compares exactly the coordinates this function will fetch from.
+    """
+    locator = artifact_locator(std, rel, art)
+    repo = locator["repo"]
+    ref = locator["ref"]
 
     if art.from_ == "url":
         return Resolved(url=art.url)  # type: ignore[arg-type]

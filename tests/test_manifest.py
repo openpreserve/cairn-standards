@@ -121,11 +121,43 @@ def test_baseline_rejects_removing_a_published_artifact(tmp_path):
 
 
 def test_baseline_rejects_repointing_a_published_ref(tmp_path):
+    """One ref change repoints every artifact that inherits it, reported as a single error."""
     before = load_all(_workspace(tmp_path, "before", PUBLISHED))
     after = load_all(_workspace(tmp_path, "after", PUBLISHED.replace("ref: v1.0.0", "ref: v1.0.1")))
     errors = compare_to_baseline(after, before)
-    assert len(errors) == 1
-    assert "ref changed" in errors[0]
+    assert len(errors) == 1, errors
+    assert "source repointed" in errors[0]
+    assert "demo.xsd" in errors[0] and "demo.sch" in errors[0]
+
+
+def test_baseline_rejects_repointing_one_artifact_path(tmp_path):
+    """Same URL, different upstream file. The release block itself is untouched."""
+    before = load_all(_workspace(tmp_path, "before", PUBLISHED))
+    after = load_all(
+        _workspace(tmp_path, "after", PUBLISHED.replace("path: demo.sch }", "path: rules/demo.sch }"))
+    )
+    errors = compare_to_baseline(after, before)
+    assert len(errors) == 1, errors
+    assert "demo.sch" in errors[0] and "demo.xsd" not in errors[0]
+
+
+def test_baseline_rejects_inherited_source_ref_move(tmp_path):
+    """A release with no ref of its own inherits source.ref, so moving it repoints the bytes
+    without the release block changing at all. Comparing literal manifest fields misses this."""
+    inheriting = PUBLISHED.replace("    status: stable\n    ref: v1.0.0", "    status: stable")
+    before = load_all(_workspace(tmp_path, "before_inh", inheriting))
+    after = load_all(_workspace(tmp_path, "after_inh", inheriting.replace("ref: main", "ref: moved")))
+    errors = compare_to_baseline(after, before)
+    assert len(errors) == 1, errors
+    assert "'main' -> 'moved'" in errors[0]
+
+
+def test_baseline_rejects_unfreezing_a_published_release(tmp_path):
+    """Reverting stable to draft would let later syncs overwrite published bytes in place."""
+    before = load_all(_workspace(tmp_path, "before_uf", PUBLISHED))
+    after = load_all(_workspace(tmp_path, "after_uf", PUBLISHED.replace("status: stable", "status: draft")))
+    errors = compare_to_baseline(after, before)
+    assert any("un-freezes" in e for e in errors), errors
 
 
 def test_baseline_rejects_deleting_a_published_release(tmp_path):

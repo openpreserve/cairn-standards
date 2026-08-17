@@ -283,6 +283,25 @@ def load_standard(directory: Path, validator: Draft202012Validator | None = None
     return std
 
 
+def artifact_locator(std: Standard, rel: Release, art: Artifact) -> dict[str, str | None]:
+    """The concrete upstream coordinates an artifact resolves to.
+
+    Precedence is artifact, then release, then standard. It lives here rather than in the
+    syncer so the write-once check and the fetch agree by construction. Comparing the literal
+    manifest fields instead would miss a `source.ref` move that a frozen release silently
+    inherits, which repoints published bytes without touching the release block at all.
+    """
+    return {
+        "from": art.from_,
+        "repo": art.repo or std.source.repo,
+        "ref": art.ref or rel.ref or std.source.ref,
+        "path": art.path,
+        "url": art.url,
+        "asset": art.asset,
+        "release_tag": art.release_tag,
+    }
+
+
 def compare_to_baseline(current: list[Standard], baseline: list[Standard]) -> list[str]:
     """Report edits that would break an already-published URL.
 
@@ -311,17 +330,51 @@ def compare_to_baseline(current: list[Standard], baseline: list[Standard]) -> li
                     f"Published versions must stay in the manifest."
                 )
                 continue
+            # Reverting a published release to a mutable status un-freezes bytes that have
+            # already been handed out, which defeats the guarantee just as surely as editing
+            # them: the next sync would start overwriting the version in place.
+            if new_rel.status in MUTABLE_STATUSES:
+                errors.append(
+                    f"{std.id} v{old_rel.version}: status went from '{old_rel.status}' back to "
+                    f"'{new_rel.status}'. That un-freezes a published version and lets later "
+                    f"syncs overwrite it in place."
+                )
+
             lost = sorted({a.name for a in old_rel.artifacts} - {a.name for a in new_rel.artifacts})
             if lost:
                 errors.append(
                     f"{std.id} v{old_rel.version}: artifact(s) removed from a published release: "
                     f"{', '.join(lost)}. Those URLs are live; publish the change as a new version."
                 )
-            if new_rel.ref != old_rel.ref:
+
+            # Same URL, different upstream bytes. Compared on the resolved locator rather than
+            # the literal fields, so an inherited `source.ref` or `release.ref` move is caught
+            # even when the artifact block itself is untouched.
+            # Grouped by what moved, because one edit to a release or standard ref repoints
+            # every artifact that inherits it, and N copies of the same sentence buries the
+            # single change that caused them.
+            new_by_name = {a.name: a for a in new_rel.artifacts}
+            repoints: dict[str, list[str]] = {}
+            for old_art in old_rel.artifacts:
+                new_art = new_by_name.get(old_art.name)
+                if new_art is None:
+                    continue
+                old_loc = artifact_locator(was, old_rel, old_art)
+                new_loc = artifact_locator(std, new_rel, new_art)
+                if old_loc == new_loc:
+                    continue
+                detail = "; ".join(
+                    f"{k}: {old_loc[k]!r} -> {new_loc[k]!r}"
+                    for k in sorted(old_loc)
+                    if old_loc[k] != new_loc[k]
+                )
+                repoints.setdefault(detail, []).append(old_art.name)
+
+            for detail, names in repoints.items():
                 errors.append(
-                    f"{std.id} v{old_rel.version}: ref changed from {old_rel.ref!r} to "
-                    f"{new_rel.ref!r} on a published release. Repointing a frozen version at "
-                    f"different bytes is what versioning exists to prevent."
+                    f"{std.id} v{old_rel.version}: source repointed on a published release for "
+                    f"{', '.join(names)} ({detail}). Those URLs are live and their bytes must "
+                    f"not change; publish the new source as a new version."
                 )
     return errors
 
