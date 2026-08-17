@@ -21,10 +21,10 @@ services:
     # Host publishing is added by docker-compose.local.yml for local testing.
     expose:
       - "8080"
-    environment:
-      # nginx reloads when the generated routes actually change, checked every RELOAD_POLL
-      # seconds (default 60, defined in deploy/web-entrypoint.sh). Uncomment to override.
-      # RELOAD_POLL: "60"
+    # nginx reloads when the generated routes actually change, checked every RELOAD_POLL
+    # seconds (default 60, defined in deploy/web-entrypoint.sh). To override, add:
+    #   environment:
+    #     RELOAD_POLL: "60"
     volumes:
       - site_data:/usr/share/nginx/html
       - routes_data:/etc/nginx/cairn

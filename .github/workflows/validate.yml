@@ -38,6 +38,19 @@ jobs:
       - name: Unit tests
         run: pytest -q
 
+      # A compose file can be valid YAML and still be rejected at deploy time: commenting
+      # out the last entry under `environment:` leaves the key present but empty, which
+      # Compose refuses. That reached main once, breaking every docker compose command
+      # against it, because nothing checked the deployment files.
+      - name: Deployment files parse
+        run: |
+          docker compose -f deploy/docker-compose.yml config >/dev/null
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.ghcr.yml config >/dev/null
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml config >/dev/null
+          docker compose -f deploy/docker-compose.yml --profile tunnel config >/dev/null
+          sh -n deploy/sync-loop.sh
+          sh -n deploy/web-entrypoint.sh
+
       - name: Dry-run sync (upstream reachability)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
