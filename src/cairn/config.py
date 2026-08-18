@@ -15,6 +15,11 @@ SITE_DIRNAME = "site"                       # the nginx document root
 # of them. Named here rather than in either module, because a copy in the reaper is a copy of
 # the render's decision, and the reaper deletes files on the strength of it.
 RELEASE_PAGE_NAME = "index.html"
+# The two metadata files the sync writes into every release directory. Named here for the same
+# reason as the page above: the orphan reaper spares all three by name, and a rename that
+# missed one copy would have it delete the file instead.
+PROVENANCE_NAME = "provenance.json"
+SUMS_NAME = "SHA256SUMS"
 BUILD_DIRNAME = "build"                     # generated non-served artifacts (nginx conf, ...)
 NGINX_ROUTES_RELPATH = Path("nginx") / "cairn-routes.conf"
 

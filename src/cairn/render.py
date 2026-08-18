@@ -12,7 +12,7 @@ import markdown as md
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from . import BASE_URL, __version__
-from .config import RELEASE_PAGE_NAME, site_dir
+from .config import PROVENANCE_NAME, RELEASE_PAGE_NAME, site_dir
 from .manifest import ManifestError, Release, Standard
 from .nginx import write_routes
 from .util import DecodeError, atomic_write, is_provenance_record_set, reap_temp_tree, read_text
@@ -118,7 +118,7 @@ def _load_provenance(root: Path, std_id: str, version: str) -> dict | None:
     once - the sync rejected valid JSON of the wrong shape a release before this side learned
     to - and the whole point of a shape contract is that both ends hold the same one.
     """
-    path = site_dir(root) / std_id / f"v{version}" / "provenance.json"
+    path = site_dir(root) / std_id / f"v{version}" / PROVENANCE_NAME
     if not path.exists():
         return None
     try:

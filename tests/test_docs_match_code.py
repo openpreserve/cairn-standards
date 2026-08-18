@@ -242,3 +242,25 @@ def test_nginx_serves_the_release_page_the_render_actually_writes():
             f"nginx.conf serves '{directive}', but the render writes {RELEASE_PAGE_NAME!r}. "
             f"Every release directory would answer 404."
         )
+
+
+def test_the_docs_do_not_cite_symbols_the_code_no_longer_has():
+    """The runbook's reference section names the symbols a maintainer is told to go and read.
+    `MUTABLE_STATUSES` outlived its deletion there by a whole commit titled 'pin the docs to
+    the code', because nothing compared the two."""
+    import re
+
+    source = "".join(
+        (ROOT / "src" / "cairn" / name).read_text(encoding="utf-8")
+        for name in ("manifest.py", "sync.py", "config.py", "util.py", "cli.py", "markers.py")
+    )
+    for doc in sorted((ROOT / "docs").glob("*.md")) + [ROOT / "CONTRIBUTING.md"]:
+        text = doc.read_text(encoding="utf-8")
+        # Backticked ALL_CAPS or CamelCase names attributed to a src/cairn file on the same line.
+        for line in text.splitlines():
+            if "src/cairn/" not in line:
+                continue
+            for symbol in re.findall(r"`([A-Z][A-Za-z0-9_]{3,})`", line):
+                assert symbol in source, (
+                    f"{doc.name} sends a reader to src/cairn for `{symbol}`, which no longer exists"
+                )

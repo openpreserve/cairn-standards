@@ -6,7 +6,13 @@ import pytest
 from fakes import workspace
 
 from cairn.config import find_root
-from cairn.manifest import ManifestError, compare_to_baseline, load_all, load_standard
+from cairn.manifest import (
+    Lifecycle,
+    ManifestError,
+    compare_to_baseline,
+    load_all,
+    load_standard,
+)
 from cairn.util import media_type_for, semver_key
 
 ROOT = find_root(Path(__file__).resolve().parent)
@@ -138,14 +144,30 @@ def test_a_published_release_cannot_inherit_its_ref(tmp_path):
         load_all(_workspace(tmp_path, "before_inh", inheriting))
 
 
-def test_baseline_rejects_repointing_an_inherited_draft_ref(tmp_path):
-    """Drafts may still inherit source.ref, and a draft that has been published since is
-    compared on the resolved locator, so the move is caught even though the release block is
-    untouched."""
-    inheriting = PUBLISHED.replace("    lifecycle: published\n    ref: v1.0.0", "    lifecycle: published\n    ref: main")
+def test_baseline_rejects_repointing_an_inherited_ref(tmp_path):
+    """A release with no `ref` of its own inherits `source.ref`, so moving that repoints the
+    bytes without the release block changing at all. compare_to_baseline compares resolved
+    locators rather than literal fields, which is the only reason this is caught.
+
+    Exercised through a draft, because a published release must pin its own ref. Written with
+    an explicit release-level ref for a while, which quietly stopped covering
+    `artifact_locator`'s `art.ref or rel.ref or std.source.ref` fallback: had the fallback
+    regressed to ignore `source.ref` entirely, that version still passed.
+    """
+    inheriting = PUBLISHED.replace("    lifecycle: published\n    ref: v1.0.0", "    lifecycle: draft")
     before = load_all(_workspace(tmp_path, "before_inh", inheriting))
-    after = load_all(_workspace(tmp_path, "after_inh", inheriting.replace("    ref: main", "    ref: moved")))
+    # Published in the baseline, so the write-once comparison applies; the manifest under test
+    # keeps it published and moves only the standard-level ref it inherits from.
+    for std in before:
+        for rel in std.releases:
+            rel.lifecycle = Lifecycle.PUBLISHED
+    after = load_all(_workspace(tmp_path, "after_inh", inheriting.replace("ref: main", "ref: moved")))
+    for std in after:
+        for rel in std.releases:
+            rel.lifecycle = Lifecycle.PUBLISHED
+
     errors = compare_to_baseline(after, before)
+
     assert len(errors) == 1, errors
     assert "'main' -> 'moved'" in errors[0]
 

@@ -128,8 +128,9 @@ its pinned ref, which is worth looking into.
 - Lifecycle values: `draft`, `published`. Serving: `served: true|false`.
 - Maturity labels (display only): `alpha`, `beta`, `stable`, `deprecated`
   (`schemas/standard.schema.json`).
-- Only `draft` is mutable; all others are write-once (`src/cairn/manifest.py`,
-  `MUTABLE_STATUSES`).
+- Only `lifecycle: draft` is mutable; `published` is write-once and one-way
+  (`src/cairn/manifest.py`, `Lifecycle` and `Release.is_mutable`). Un-serving a release with
+  `served: false` does not un-publish it.
 - Ref precedence (most specific wins): artifact `ref` > release `ref` > `source.ref`. Defined
   once in `artifact_locator` (`src/cairn/manifest.py`) and used by both the fetch and the
   write-once check, so the two cannot disagree.

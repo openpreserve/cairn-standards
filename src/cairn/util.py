@@ -93,7 +93,10 @@ def sha256_hex(data: bytes) -> str:
 # The negative lookahead is the whole point: "." and ".." match the character class, so without
 # it a record naming ".." was accepted, listed as an orphan, and reached (vdir / "..").unlink()
 # - which raises EISDIR, failing that release on every cycle with an OSError carrying no marker.
-_SAFE_ARTIFACT_NAME = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._-]+$")
+# `\Z`, not `$`: `$` also matches before a trailing newline, so "demo.xsd\n" passed a
+# check whose whole job is to insist on a bare filename - and that name is joined onto
+# the release directory and handed to unlink() and atomic_write().
+_SAFE_ARTIFACT_NAME = re.compile(r"\A(?!\.{1,2}\Z)[A-Za-z0-9._-]+\Z")
 
 
 def is_provenance_record_set(data: object) -> bool:
