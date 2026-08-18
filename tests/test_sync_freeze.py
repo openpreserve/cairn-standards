@@ -134,18 +134,22 @@ def test_structurally_invalid_provenance_is_refused_when_published(tmp_path):
 
 
 def test_frozen_record_without_sha256_does_not_raise_false_positive(tmp_path):
-    """An old provenance record that predates sha256 recording must not trigger FROZEN VERSION CHANGED.
+    """An old provenance record that predates sha256 recording must not trigger FROZEN VERSION
+    CHANGED. The missing checksum is computed and stored so later runs can compare for real.
 
-    On the next sync/verify run, the missing sha256 is computed and stored so future
-    runs can do a real integrity check.
+    Upstream corroborates the served copy, so there is nothing to write: reinstating the
+    identical bytes moves the inode and mtime, and therefore the ETag, of a URL nginx serves
+    with immutable cache headers.
     """
     _seed(tmp_path, b"DATA", extra_sha256=False)
+    served = site_dir(tmp_path) / "demo" / "v1.0.0" / "demo.xsd"
+    before = served.stat().st_ino
 
-    stats = sync_standard(_std(), tmp_path, _FakeClient(b"DATA"), verify=True, log=lambda *a: None)
-    # Re-recorded (not verified) because there was nothing to compare against
-    assert stats.fetched == 1
+    sync_standard(_std(), tmp_path, _FakeClient(b"DATA"), verify=True, log=lambda *a: None)
+
     prov = json.loads((site_dir(tmp_path) / "demo" / "v1.0.0" / "provenance.json").read_text())
     assert prov["artifacts"][0]["sha256"] == sha256_hex(b"DATA")
+    assert served.stat().st_ino == before, "identical bytes were reinstalled under a cached URL"
 
 
 def test_orphaned_artifact_is_removed_from_a_draft(tmp_path):
@@ -1630,3 +1634,23 @@ def test_the_no_checksum_backstop_refuses_before_writing(tmp_path):
             sync_standard(_std(), tmp_path, _FakeClient(b"DATA"), log=lambda *a: None)
 
     assert not (site_dir(tmp_path) / "demo" / "v1.0.0" / "demo.xsd").exists(), "nothing may be written"
+
+
+def test_a_run_survives_stdout_dying_while_it_reports_a_failure(tmp_path):
+    """A closed pipe - `docker logs` killed, a full disk - while the per-release handler is
+    writing its [FAIL] line. The release is already counted by then, so the accounting stays
+    honest; what matters is that the standard is isolated rather than taking the run down."""
+    _seed(tmp_path, b"PUBLISHED")
+
+    def log_that_dies_reporting_a_failure(message=""):
+        if "[FAIL]" in message and "v1.0.0" in message:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    with mock.patch("cairn.sync.http_client", lambda: _FakeClient(b"RETAGGED")):
+        stats = sync_all([_std()], tmp_path, verify=True, log=log_that_dies_reporting_a_failure)
+
+    assert stats.failures, "the fault was not reported at all"
+    assert stats.nothing_succeeded, (
+        f"a run that established nothing reported otherwise: "
+        f"attempted={stats.releases_attempted} failed={stats.releases_failed}"
+    )

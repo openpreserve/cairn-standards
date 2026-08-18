@@ -230,22 +230,33 @@ def _fetch(url: str, client: httpx.Client) -> bytes:
     on a single un-retried GET. A gate that can pass what the real thing rejects is worse than
     no gate, which is the same argument that made the dry run fail on UNREACHABLE at all.
     """
-    resp = _with_retry(lambda: client.get(url))
-    if resp is None:
-        raise SyncError(f"fetch failed [no response] {url}")
+    try:
+        resp = _with_retry(lambda: client.get(url))
+    except httpx.HTTPError as exc:
+        # _describe, not str(exc): httpx wraps a bare socket timeout with no message of its own,
+        # so str() is "" and the operator gets a marker with nothing after it. Swallowing the
+        # exception entirely made a DNS failure, a TLS error, a connection reset and a 30s
+        # timeout indistinguishable in the log and in stats.failures.
+        raise SyncError(f"fetch failed [{_describe(exc)}] {url}") from exc
     if resp.status_code != 200:
         raise SyncError(f"fetch failed [{resp.status_code}] {url}")
     return resp.content
 
 
-def _with_retry(send) -> httpx.Response | None:
-    """Call *send*, retrying a fault that might be transient. None if every attempt failed.
+def _with_retry(send) -> httpx.Response:
+    """Call *send*, retrying a fault that might be transient. Raises if every attempt failed.
 
     Shared by the probe and the fetch so the two cannot drift on what counts as transient. Only
     a fast failure is retried: the client allows 30s, so asking again after a hang costs the
     whole timeout a second and third time, across every artifact, during exactly the upstream
     incident that made it slow.
+
+    A response outranks an exception when reporting the outcome. Overwriting the response with
+    None on a later attempt lost a 429 or 503 seen on the first, and the caller then reported
+    "no response" for what was a rate limit.
     """
+    last_response: httpx.Response | None = None
+    last_error: httpx.HTTPError | None = None
     for attempt in range(REACHABILITY_ATTEMPTS):
         started = _monotonic()
         try:
@@ -254,17 +265,20 @@ def _with_retry(send) -> httpx.Response | None:
                 resp.status_code < 500 and resp.status_code not in RETRYABLE_CLIENT_STATUS
             ):
                 return resp
-            last: httpx.Response | None = resp
-        except httpx.HTTPError:
-            last = None
+            last_response = resp
+        except httpx.HTTPError as exc:
+            last_error = exc
 
         if _monotonic() - started >= REACHABILITY_RETRY_BELOW_SECONDS:
-            return last
+            break
         if attempt + 1 < REACHABILITY_ATTEMPTS:
             # Jittered, because every CI job of every open pull request probes the same handful
             # of hosts, and a fixed backoff has them all come back at the same instant.
             _sleep(REACHABILITY_BACKOFF_SECONDS * (attempt + 1) * random.uniform(0.5, 1.5))
-    return last
+
+    if last_response is not None:
+        return last_response
+    raise last_error if last_error is not None else httpx.HTTPError("no attempt was made")
 
 
 @dataclass
@@ -293,20 +307,13 @@ class SyncStats:
     def nothing_succeeded(self) -> bool:
         """Every unit of work the run attempted failed, so it established nothing at all.
 
-        Distinct from `not ok`, because the two want opposite responses from the loop: a
-        pass where most of the corpus was checked is a verification with a problem in it, and
-        a pass where none of it was is not a verification.
+        Distinct from `not ok`: a pass where most of the corpus was checked is a verification
+        with a problem in it, and a pass where none of it was is not a verification. Only the
+        second must withhold the verify stamp.
 
-        The unit is the release, not the standard. Once a failing release stopped abandoning
-        its siblings, a standard was no longer all-or-nothing: one rotted record in a
-        three-release standard is a run that read and checksummed the other two. Counting
-        standards reported that as "nothing was checked", the loop refused the stamp, and the
-        whole frozen corpus was re-verified and re-downloaded every cycle forever - the exact
-        pathology per-release isolation was added to remove, surviving in the accounting that
-        consumes it.
-
-        A run that attempted nothing has established nothing either way, and must not report
-        that it established nothing *successfully* - that is what would suppress the stamp.
+        The unit is the release, not the standard, because a failing release no longer
+        abandons its siblings. A run that attempted nothing must not report that everything
+        failed, or it would withhold the stamp for a cycle that simply had no work.
         """
         return self.releases_attempted > 0 and self.releases_failed == self.releases_attempted
 
@@ -346,6 +353,8 @@ class ReleasePlan:
     prior: dict | None = None
     # this cycle is the one that publishes the release, so the write-once guards were off
     publishing: bool = False
+    # published but not served: read, not written, including its metadata
+    dormant: bool = False
 
     @property
     def records(self) -> list[dict]:
@@ -403,17 +412,16 @@ def _orphan_names(vdir: Path, current_names: set[str], prior: dict | None, damag
     Normally provenance is the authority on what the sync put there, so only names it recorded
     are candidates and the render's output is safe by construction.
 
-    A rebuilt record has no such list, and returning nothing for that case left those files
-    published permanently: from the next cycle onwards the record is intact and does not name
-    them either, so no reaper can ever see them again. The directory itself is the only
-    remaining evidence, so it is read directly, with the names neither this module nor the
-    manifest owns held back explicitly. Only reachable for a mutable or withdrawn release - a
-    damaged record on a published one is refused before this point - so nothing here can
-    remove a file that is under a write-once promise.
+    A record that was rebuilt, or simply lost, carries no such list, and returning nothing
+    there strands those files permanently: from the next cycle the record is intact and does
+    not name them either, so no reaper can see them again. Both cases scan the directory
+    itself, holding back the names neither this module nor the manifest owns. Unreachable for a
+    published release, whose damaged record is refused before this point, so nothing here can
+    remove a file under a write-once promise.
     """
     if prior:
         return sorted({a["name"] for a in prior["artifacts"]} - current_names)
-    if not damaged_metadata:
+    if not (damaged_metadata or vdir.is_dir()):
         return []
     # Deliberately not caught. Swallowing it returned "no orphans", which is indistinguishable
     # from "nothing to reap": the files this function exists to remove would keep serving
@@ -468,11 +476,11 @@ def _plan_release(
             f"{Marker.PROVENANCE_UNAVAILABLE}: {std.id} v{rel.version}\n"
             f"  {exc}\n"
             + (
-                f"  The file's mode has been repaired, so the next cycle should be able to read it.\n"
+                "  The file's mode has been repaired, so the next cycle should be able to read it.\n"
                 if repaired
-                else f"  Nothing about this release can be established until that file can be read.\n"
+                else "  Nothing about this release can be established until that file can be read.\n"
             )
-            + f"  Nothing was written, and the next cycle will try again."
+            + "  Nothing was written, and the next cycle will try again."
         ) from exc
     except ProvenanceUnreadable as exc:
         if rel.ever_published:
@@ -488,55 +496,38 @@ def _plan_release(
         damaged_metadata = True
         prior = None
 
-    # The manifest decides whether this release has published, and provenance only witnesses
-    # it. That direction matters: provenance lives on the volume these guards protect, so a
-    # record that rots, is partially restored, or is hand-edited used to be able to turn all
-    # four guards off. The manifest's history is append-only and gated by `cairn validate
-    # --baseline`, and `Lifecycle` only moves draft -> published, so no sequence of edits can
-    # make an already-published version claim it never published.
+    # The manifest decides whether this release has published; provenance only witnesses it.
+    # That direction matters, because provenance lives on the volume these guards protect,
+    # while the manifest's history is append-only and gated by `cairn validate --baseline`.
+    # Refused rather than defaulted, because both defaults are wrong in opposite directions and
+    # neither is detectable afterwards: read as a draft it turns every guard off, read as
+    # published it takes the no-fetch fast path and freezes the draft era as the release.
     #
-    # The previous design asked the same question of a `status` word that the sync itself
-    # rewrote every cycle, which is asking a variable with no memory about the past. Three
-    # successive fixes closed three paths through a six-value enum and the fourth was still
-    # reachable: stable -> withdrawn -> draft came back mutable with published bytes on disk.
-    # A record that cannot say which era wrote it is refused rather than defaulted, because
-    # both defaults are wrong in opposite directions and neither is detectable afterwards.
-    # Reading it as a draft turns every guard off and the next sync adopts upstream; reading it
-    # as published takes the no-fetch fast path and freezes the draft era's bytes as the
-    # release. Reachable from an older cairn's record, from a rotted field, and from the
-    # hand-restored backup the PROVENANCE UNREADABLE runbook entry tells operators to produce.
+    # Checked for drafts too. Gating it on `ever_published` left the draft case defaulting to
+    # published, so a record cairn could not read raised PUBLISHED VERSION UNFROZEN and told the
+    # operator to fix a manifest that was already correct.
     recorded_lifecycle = prior.get("lifecycle") if prior is not None else None
-    if rel.ever_published and prior is not None and recorded_lifecycle not in tuple(Lifecycle):
+    if prior is not None and recorded_lifecycle not in tuple(Lifecycle):
         raise SyncError(
             f"{Marker.PROVENANCE_UNREADABLE}: {std.id} v{rel.version}\n"
             f"  the record parsed, but its lifecycle is {recorded_lifecycle!r} rather than one of\n"
-            f"  {', '.join(repr(str(m)) for m in Lifecycle)}. This version is published, so whether\n"
-            f"  this record describes the published era decides whether the write-once checks run,\n"
-            f"  and guessing it either way is unrecoverable: one adopts whatever upstream serves\n"
-            f"  now, the other freezes the draft that preceded the release. Restore the record\n"
-            f"  from a backup, or confirm the served bytes against an independent copy and\n"
-            f"  re-publish the version deliberately."
+            f"  {', '.join(repr(str(m)) for m in Lifecycle)}. Whether this record describes a\n"
+            f"  published era decides whether the write-once checks run, and guessing it either\n"
+            f"  way is unrecoverable: one adopts whatever upstream serves now, the other freezes\n"
+            f"  the draft that preceded the release. Restore the record from a backup, or confirm\n"
+            f"  the served bytes against an independent copy and re-publish the version.\n"
+            f"  Records written before cairn had this field are not migrated: this service has\n"
+            f"  never published a version, so its volumes were rebuilt rather than upgraded."
         )
 
     recorded_publication = prior is not None and recorded_lifecycle != Lifecycle.DRAFT
 
-    # A release does not simply *have* a frozen lifecycle, it *becomes* published, and that
-    # moment is the publication: the coordinates and bytes the manifest names now are what is
-    # being published. Treating the first published cycle as "already frozen, so skip" instead
-    # froze the draft era - the branch-head bytes stayed on disk under the new version, a
-    # checksum matching them was recorded, SHA256SUMS was written to agree, and the run exited
-    # 0. The release was then self-certifying while serving something that was never the
-    # release. This is the promotion every manifest here documents, so it must not guess.
+    # A release does not *have* a published lifecycle, it *becomes* published, and that cycle
+    # is the publication: what the manifest names now is what gets published, so it must be
+    # fetched rather than assumed to be what is already on disk.
     #
-    # Evidence that this release has already put bytes behind its URLs, from either direction:
-    # the record can be lost while the files it described stay served, and the files can be
-    # lost while the record survives. Both are read off the volume rather than reconstructed
-    # from a history, which is what the deleted `status` inference was trying and failing to do.
-    #
-    # The record wins wherever it exists, because files alone cannot say which era wrote
-    # them: a promotion always finds the draft era's bytes sitting in the directory, and
-    # counting those as a publication would skip the fetch and freeze the draft - the exact
-    # substitution the promotion path was fixed for.
+    # The record outranks the files, because files alone cannot say which era wrote them: a
+    # promotion always finds the draft era's bytes in the directory.
     if prior is not None:
         already_published_here = recorded_publication
     else:
@@ -583,22 +574,15 @@ def _plan_release(
             commit_cache[key] = _resolve_commit(resolved.repo, resolved.ref, client)
         return commit_cache[key]
 
-    # A published release that is not served is dormant: not fetched, not compared, not
-    # written. Nothing reads these URLs, so there is nothing to corroborate and nothing to
-    # repair, and probing them anyway is how a re-tagged upstream under a release somebody
-    # deliberately withdrew failed that whole standard on every verify pass, forever, with no
-    # way out - the manifest cannot drop a published release either.
+    # A published release that is not served is dormant: not fetched, compared, or written.
+    # Nothing reads these URLs, and probing them anyway fails the standard forever when the
+    # upstream tag has moved, which is the usual reason a release was withdrawn.
     #
-    # Stated once, here, rather than as an `is_served` clause on each guard. That was the
-    # previous shape: five guards carried it, a sixth silently did not, and no predicate
-    # existed to compare them against. Skipping is also strictly safer than exempting, because
-    # an exempted guard still lets the fetched bytes be written, which is how a withdrawn
-    # release came to adopt upstream drift and then certify it on the way back to stable.
+    # Stated once here rather than as an `is_served` clause on each guard, and skipping rather
+    # than exempting: an exempted guard still lets the fetched bytes be written.
     #
-    # `not publishing_now` matters: publishing a version that is not served still has to write
-    # what it promises. Skipping it would leave the draft era's branch-head bytes in place under
-    # a published version, to be served the moment it is restored - the promotion bug, reached
-    # through the dormant door.
+    # `not publishing_now`, because publishing a version that is not served still has to write
+    # what it promises, or the draft's bytes wait to be served the moment it is restored.
     dormant = rel.ever_published and not rel.served and not publishing_now
 
     planned: list[PlannedArtifact] = []
@@ -607,10 +591,12 @@ def _plan_release(
         dest = vdir / art.name
         frozen = prior_arts.get(art.name)
 
-        # Both conditions matter: with no record there is nothing to carry forward into
-        # provenance.json, and with no file there is nothing being served to leave alone. Either
-        # way the release takes the ordinary published path, which restores or refuses.
-        if dormant and frozen is not None and dest.exists():
+        # The record is required, because there would otherwise be nothing to carry forward
+        # into provenance.json. The file deliberately is not: requiring it sent a dormant
+        # release whose artifact had been removed down the fetch path, where a re-tagged
+        # upstream - the usual reason a release is withdrawn - failed that standard on every
+        # cycle with no way out, which is the trap this rule exists to close.
+        if dormant and frozen is not None:
             planned.append(PlannedArtifact(art.name, dest, Action.SKIP, frozen))
             continue
         # `served` is deliberately absent. Un-serving a release does not un-freeze it, so its
@@ -628,16 +614,12 @@ def _plan_release(
         data = _fetch(resolved.url, client)
         digest = sha256_hex(data)
 
-        # Nothing here recorded a checksum for this published artifact, so the only thing that
-        # could establish what was published is the served copy itself. Upstream agreeing with
-        # it settles the question; anything else is a question for a person, because a copy
-        # that disagrees, cannot be read, or is not there at all leaves no way to tell a volume
-        # that lost bytes from an upstream that was re-tagged, and those want opposite answers.
-        #
-        # Gating this on the file existing was the hole: a legacy record whose artifact had
-        # also vanished fell past this guard and past the vanished-artifact restore below,
-        # which needs a checksum to compare, and landed on a plain write. A published URL
-        # silently started serving different bytes, and the record was rewritten to agree.
+        # No checksum was ever recorded, so the served copy is the only thing that can say what
+        # was published. Upstream agreeing with it settles the question; anything else is a
+        # question for a person, because a copy that disagrees, cannot be read, or is not there
+        # leaves no way to tell a volume that lost bytes from an upstream that was re-tagged,
+        # and those want opposite answers. Not gated on the file existing: a vanished artifact
+        # needs this guard most.
         if frozen_promise and not (frozen or {}).get("sha256"):
             served = _served_digest(dest)
             # No record and no file is not a lost artifact, it is a version being published
@@ -654,6 +636,15 @@ def _plan_release(
                     f"  would settle that by assumption and destroy the evidence. Confirm against\n"
                     f"  an independent copy, then restore the file or publish a new version."
                 )
+            # Corroborated, so there is nothing to write. Falling through to a plain write
+            # reinstalled every artifact of a release whose provenance had been lost but whose
+            # bytes were intact, moving the inode and mtime - and therefore the ETag - of URLs
+            # nginx serves with immutable cache headers, for content that had not changed.
+            if was_published_before:
+                planned.append(PlannedArtifact(art.name, dest, Action.SKIP,
+                                               _artifact_record(art, resolved, data, digest,
+                                                                commit_for(resolved))))
+                continue
 
         # `is_served` for the same reason its three siblings have it: withdrawing a release
         # is exactly what you do when upstream has moved or gone, and nothing is published
@@ -754,16 +745,15 @@ def _plan_release(
             f"  only fix that keeps the published URLs working."
         )
 
-    # Asserted here, before the commit phase writes anything. Raising from inside the commit
-    # loop would leave the release half written: new bytes on disk, orphans already deleted,
-    # and provenance.json still describing the previous state.
+    # Asserted before the commit phase writes anything: raising from the commit loop would
+    # leave the release half written. No path above can produce a record without a checksum
+    # today, so this is a backstop, kept honest by a test that forces the condition.
     #
-    # No path above can produce a record without a checksum today. This is a backstop for a
-    # regression that shipped once: plan.records is what SHA256SUMS is built from, so such a
-    # record published a checksum for bytes nothing had written, and every later integrity
-    # check would have compared against a claim that was never true. It has a test that
-    # forces the condition, so it is exercised rather than merely present.
-    missing = [p.name for p in planned if not p.record.get("sha256")]
+    # Skipped entries are excluded: a dormant release carries its prior record forward verbatim
+    # and writes no metadata, so a checksum-less record has nothing here to protect.
+    missing = [
+        p.name for p in planned if p.action is not Action.SKIP and not p.record.get("sha256")
+    ]
     if missing:
         raise SyncError(
             f"{Marker.NO_CHECKSUM_RECORDED}: {std.id} v{rel.version}\n"
@@ -772,7 +762,8 @@ def _plan_release(
             f"  silently disables every later integrity comparison for that file."
         )
 
-    return ReleasePlan(rel, vdir, planned, orphans, damaged_metadata, prior, publishing_now)
+    return ReleasePlan(rel, vdir, planned, orphans, damaged_metadata, prior, publishing_now,
+                       dormant)
 
 
 def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) -> None:
@@ -908,6 +899,14 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
     records = plan.records
     prov_path = plan.vdir / "provenance.json"
     sums_path = plan.vdir / "SHA256SUMS"
+
+    # A dormant release was read and not written, and that has to include its metadata: its
+    # records are the prior ones carried forward verbatim, so there is nothing to restate. It
+    # also may not be restatable - a legacy or hand-restored record with no checksum cannot be
+    # rendered into SHA256SUMS at all, and building it anyway raised KeyError from inside the
+    # metadata writer for a release nothing had touched.
+    if plan.dormant:
+        return
 
     provenance = {
         "standard": std.id,
@@ -1121,8 +1120,10 @@ def _reachable(url: str, client: httpx.Client) -> bool:
             resp = client.get(url, headers={"Range": "bytes=0-0"})
         return resp
 
-    resp = _with_retry(probe)
-    return resp is not None and resp.status_code < 400
+    try:
+        return _with_retry(probe).status_code < 400
+    except httpx.HTTPError:
+        return False
 
 
 def sync_all(

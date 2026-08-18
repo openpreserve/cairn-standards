@@ -160,12 +160,17 @@ def _check_invariant(state, provenance, on_disk, upstream, served: Path, before,
     if lifecycle is Lifecycle.DRAFT:
         return
 
-    # Published but not served: dormant. Not fetched, not compared, not written. The bytes are
-    # still promised - the manifest cannot drop them - so what must hold is that nothing touches
-    # them, which is strictly stronger than the old rule that a withdrawn release simply must
-    # not fail. That weaker rule is what let a withdrawn release adopt upstream drift.
-    if not is_served and provenance in ("valid", "no_checksum") and on_disk != "missing":
-        assert served.read_bytes() == before, f"{case}: a dormant release's bytes were rewritten"
+    # Published but not served: dormant. Not fetched, not compared, not written, whatever state
+    # the directory is in - including an artifact that has gone missing. Requiring the file to
+    # be present sent that case down the fetch path, where a re-tagged upstream (the usual
+    # reason a release is withdrawn) failed the standard on every cycle with no way out, since
+    # a published release cannot be dropped from the manifest either.
+    #
+    # A lost artifact is not left lost forever: restoring service makes the release non-dormant,
+    # and the vanished-artifact restore puts the recorded bytes back on that cycle.
+    if not is_served and provenance in ("valid", "no_checksum"):
+        after = served.read_bytes() if served.exists() else None
+        assert after == before, f"{case}: a dormant release was written to"
         if provenance == "valid":
             assert not failed, f"{case}: a dormant release was reported as failed"
         return
@@ -248,7 +253,7 @@ def test_the_oracle_objects_to_a_dormant_release_being_written_to(tmp_path):
     before = served.read_bytes()
     served.write_bytes(UPSTREAM_MOVED)
 
-    with pytest.raises(AssertionError, match="dormant release's bytes were rewritten"):
+    with pytest.raises(AssertionError, match="dormant release was written to"):
         _check_invariant(dormant, "valid", "published", "moved", served, before, SyncStats(), "meta")
 
 
