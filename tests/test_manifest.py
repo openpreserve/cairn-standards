@@ -1,7 +1,9 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
+from fakes import workspace
 
 from cairn.config import find_root
 from cairn.manifest import ManifestError, compare_to_baseline, load_all, load_standard
@@ -27,16 +29,8 @@ def test_util_helpers():
 
 
 def _write_manifest(tmp_path: Path, body: str) -> Path:
-    d = tmp_path / "standards" / "demo"
-    d.mkdir(parents=True)
-    (d / "standard.yaml").write_text(body, encoding="utf-8")
-    # a JSON schema copy so find_root/validator resolves against tmp
-    schemas = tmp_path / "schemas"
-    schemas.mkdir()
-    (schemas / "standard.schema.json").write_text(
-        (ROOT / "schemas" / "standard.schema.json").read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    return d
+    workspace(tmp_path, {"demo": body})
+    return tmp_path / "standards" / "demo"
 
 
 VALID = """
@@ -48,7 +42,8 @@ source: { type: github, repo: owner/repo, ref: main }
 major_lines: [ { major: 1, latest: 1.0.0 } ]
 releases:
   - version: 1.0.0
-    status: stable
+    lifecycle: published
+    ref: v1.0.0
     artifacts:
       - { name: demo.xsd, role: schema, from: repo, path: demo.xsd }
 """
@@ -85,23 +80,14 @@ def test_missing_locator_rejected(tmp_path):
 
 def _workspace(tmp_path: Path, name: str, body: str) -> Path:
     """A standalone workspace root, so two revisions of a manifest can be compared."""
-    root = tmp_path / name
-    d = root / "standards" / "demo"
-    d.mkdir(parents=True)
-    (d / "standard.yaml").write_text(body, encoding="utf-8")
-    schemas = root / "schemas"
-    schemas.mkdir()
-    (schemas / "standard.schema.json").write_text(
-        (ROOT / "schemas" / "standard.schema.json").read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    return root
+    return workspace(tmp_path / name, {"demo": body})
 
 
 PUBLISHED = VALID.replace(
     "      - { name: demo.xsd, role: schema, from: repo, path: demo.xsd }",
     "      - { name: demo.xsd, role: schema, from: repo, path: demo.xsd }\n"
     "      - { name: demo.sch, role: schematron, from: repo, path: demo.sch }",
-).replace("status: stable", "status: stable\n    ref: v1.0.0")
+)
 
 
 def test_baseline_accepts_an_unchanged_manifest(tmp_path):
@@ -141,12 +127,24 @@ def test_baseline_rejects_repointing_one_artifact_path(tmp_path):
     assert "demo.sch" in errors[0] and "demo.xsd" not in errors[0]
 
 
-def test_baseline_rejects_inherited_source_ref_move(tmp_path):
-    """A release with no ref of its own inherits source.ref, so moving it repoints the bytes
-    without the release block changing at all. Comparing literal manifest fields misses this."""
-    inheriting = PUBLISHED.replace("    status: stable\n    ref: v1.0.0", "    status: stable")
+def test_a_published_release_cannot_inherit_its_ref(tmp_path):
+    """A release with no ref of its own inherits source.ref, so moving source.ref repoints the
+    bytes without the release block changing at all. That was caught by comparing resolved
+    locators rather than literal fields; it is now unreachable, because a published release has
+    to pin its own ref and the schema refuses one that does not. Asserted here so that relaxing
+    the schema cannot quietly restore the hole."""
+    inheriting = PUBLISHED.replace("    lifecycle: published\n    ref: v1.0.0", "    lifecycle: published")
+    with pytest.raises(ManifestError, match="'ref' is a required property"):
+        load_all(_workspace(tmp_path, "before_inh", inheriting))
+
+
+def test_baseline_rejects_repointing_an_inherited_draft_ref(tmp_path):
+    """Drafts may still inherit source.ref, and a draft that has been published since is
+    compared on the resolved locator, so the move is caught even though the release block is
+    untouched."""
+    inheriting = PUBLISHED.replace("    lifecycle: published\n    ref: v1.0.0", "    lifecycle: published\n    ref: main")
     before = load_all(_workspace(tmp_path, "before_inh", inheriting))
-    after = load_all(_workspace(tmp_path, "after_inh", inheriting.replace("ref: main", "ref: moved")))
+    after = load_all(_workspace(tmp_path, "after_inh", inheriting.replace("    ref: main", "    ref: moved")))
     errors = compare_to_baseline(after, before)
     assert len(errors) == 1, errors
     assert "'main' -> 'moved'" in errors[0]
@@ -155,14 +153,14 @@ def test_baseline_rejects_inherited_source_ref_move(tmp_path):
 def test_baseline_rejects_unfreezing_a_published_release(tmp_path):
     """Reverting stable to draft would let later syncs overwrite published bytes in place."""
     before = load_all(_workspace(tmp_path, "before_uf", PUBLISHED))
-    after = load_all(_workspace(tmp_path, "after_uf", PUBLISHED.replace("status: stable", "status: draft")))
+    after = load_all(_workspace(tmp_path, "after_uf", PUBLISHED.replace("lifecycle: published", "lifecycle: draft")))
     errors = compare_to_baseline(after, before)
     assert any("un-freezes" in e for e in errors), errors
 
 
 def test_baseline_rejects_deleting_a_published_release(tmp_path):
     before = load_all(_workspace(tmp_path, "before", PUBLISHED))
-    replacement = PUBLISHED.replace("version: 1.0.0\n    status: stable", "version: 2.0.0\n    status: stable")
+    replacement = PUBLISHED.replace("version: 1.0.0\n    lifecycle: published", "version: 2.0.0\n    lifecycle: published")
     replacement = replacement.replace("major: 1, latest: 1.0.0", "major: 2, latest: 2.0.0")
     after = load_all(_workspace(tmp_path, "after", replacement))
     errors = compare_to_baseline(after, before)
@@ -171,8 +169,80 @@ def test_baseline_rejects_deleting_a_published_release(tmp_path):
 
 def test_baseline_allows_a_draft_to_change_freely(tmp_path):
     """A draft is explicitly not a published promise, so artifact churn is fine."""
-    draft = PUBLISHED.replace("status: stable", "status: draft")
+    draft = PUBLISHED.replace("lifecycle: published", "lifecycle: draft")
     before = load_all(_workspace(tmp_path, "before", draft))
     after = load_all(_workspace(tmp_path, "after", draft.replace(
         "      - { name: demo.sch, role: schematron, from: repo, path: demo.sch }\n", "")))
     assert compare_to_baseline(after, before) == []
+
+
+def test_baseline_rejects_deleting_a_whole_published_standard(tmp_path):
+    """The cheapest possible edit, and the one the gate most needs to stop.
+
+    compare_to_baseline was driven from the current set, so a standard that no longer exists
+    was never visited and the check passed clean while every URL under it went away.
+    """
+    before = load_all(_workspace(tmp_path, "before_del", PUBLISHED))
+    empty = _workspace(tmp_path, "after_del", PUBLISHED)
+    shutil.rmtree(empty / "standards" / "demo")
+
+    errors = compare_to_baseline(load_all(empty), before)
+    assert len(errors) == 1, errors
+    assert "whole standard was removed" in errors[0] and "1.0.0" in errors[0]
+
+
+def test_baseline_allows_deleting_a_standard_that_was_only_draft(tmp_path):
+    """Nothing was ever published, so there is no promise to break."""
+    draft = PUBLISHED.replace("lifecycle: published", "lifecycle: draft")
+    before = load_all(_workspace(tmp_path, "before_dd", draft))
+    empty = _workspace(tmp_path, "after_dd", draft)
+    shutil.rmtree(empty / "standards" / "demo")
+    assert compare_to_baseline(load_all(empty), before) == []
+
+
+def test_missing_schema_gives_a_clear_error_not_a_traceback(tmp_path):
+    """find_root falls back to its argument, so a mistyped --baseline path arrives here."""
+    with pytest.raises(ManifestError, match="Is this a Cairn workspace"):
+        load_all(tmp_path / "nowhere")
+
+
+def test_removed_standard_lists_versions_in_semver_order(tmp_path):
+    """Sorted as text, v10.0.0 lands between v1.0.0 and v2.0.0. semver_key was already
+    imported in this module and every other ordering in the codebase uses it."""
+    artifacts = "    artifacts:\n      - { name: demo.xsd, role: schema, from: repo, path: demo.xsd }\n"
+    body = (
+        "id: demo\n"
+        "title: Demo\n"
+        "summary: A demo standard.\n"
+        "steward: { org: Someone }\n"
+        "source: { type: github, repo: owner/repo, ref: main }\n"
+        "major_lines: [ { major: 1, latest: 1.0.0 }, { major: 2, latest: 2.0.0 }, "
+        "{ major: 10, latest: 10.0.0 } ]\n"
+        "releases:\n"
+        + "".join(f"  - version: {v}\n    lifecycle: published\n    ref: v{v}\n{artifacts}" for v in ("1.0.0", "2.0.0", "10.0.0"))
+    )
+    baseline = load_all(_workspace(tmp_path, "before", body))
+
+    errors = compare_to_baseline([], baseline)
+
+    assert len(errors) == 1, errors
+    assert "v1.0.0, v2.0.0, v10.0.0" in errors[0]
+
+
+def test_a_manifest_that_is_not_utf8_is_a_named_error(tmp_path):
+    """UnicodeDecodeError is a ValueError, so it slipped past the YAMLError guard and reached
+    the top level as a traceback rather than a message naming the file."""
+    d = _write_manifest(tmp_path, VALID)
+    (d / "standard.yaml").write_bytes(b"\xff\xfe id: demo\n")
+
+    with pytest.raises(ManifestError, match="cannot be read"):
+        load_standard(d, root=tmp_path)
+
+
+def test_a_schema_that_is_not_utf8_is_a_named_error(tmp_path):
+    """Same class, one file away: the schema is read the same way and was guarded by nothing."""
+    d = _write_manifest(tmp_path, VALID)
+    (tmp_path / "schemas" / "standard.schema.json").write_bytes(b"\xff\xfe{}")
+
+    with pytest.raises(ManifestError, match="manifest schema"):
+        load_standard(d, root=tmp_path)
