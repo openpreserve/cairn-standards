@@ -23,8 +23,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cairn.manifest import Artifact, MajorLine, Release, Source, Standard, Steward
+from cairn.manifest import Lifecycle, Artifact, MajorLine, Release, Source, Standard, Steward
 from cairn.nginx import render_routes
+from cairn.util import TEMP_PREFIX
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NGINX_IMAGE = "nginx:1.27-alpine"
@@ -58,7 +59,7 @@ def _standard() -> Standard:
         releases=[
             Release(
                 version="1.0.0",
-                status="stable",
+                lifecycle=Lifecycle.PUBLISHED,
                 ref="v1.0.0",
                 artifacts=[Artifact(name="demo.xsd", role="schema", from_="repo", path="demo.xsd")],
             )
@@ -82,6 +83,12 @@ def _write_site(root: Path) -> None:
     (root / "demo" / "index.html").write_text("<html><body>standard</body></html>", encoding="utf-8")
     (root / "index.html").write_text("<html><body>registry</body></html>", encoding="utf-8")
     (root / "404.html").write_text("<html><body>not found</body></html>", encoding="utf-8")
+
+    # What a syncer killed between creating a temp file and renaming it leaves behind. It is
+    # reaped on the next run, but it must not be reachable in the meantime - and one of these
+    # sits under a generated route's prefix, which is where the guard's ordering matters.
+    (root / f"{TEMP_PREFIX}leftover").write_text("partial", encoding="utf-8")
+    (release / f"{TEMP_PREFIX}leftover").write_text("partial", encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -198,3 +205,21 @@ def test_schemas_are_readable_cross_origin(client):
 
 def test_unknown_paths_are_not_found(client):
     assert client.get("/demo/v9.9.9/demo.xsd").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [f"/{TEMP_PREFIX}leftover", f"/demo/v1.0.0/{TEMP_PREFIX}leftover"],
+    ids=["document-root", "under-a-generated-route"],
+)
+def test_stranded_temp_files_are_never_served(client, path):
+    """A process killed between creating a temp file and renaming it strands a partial copy of
+    a published artifact in the document root. The syncer reaps strays on its next run, which
+    can be six hours away.
+
+    The second case is the one that matters structurally: the dotfile guard is a regex
+    location, nginx tries regex locations in declaration order, and the guard used to be
+    declared *after* the generated routes include. Its coverage therefore depended on what
+    cairn's route generator happened to emit, which is not a property a guard may have.
+    """
+    assert client.get(path).status_code == 404

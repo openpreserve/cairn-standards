@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .config import nginx_routes_path
 from .manifest import Standard
+from .util import atomic_write, reap_temp_files
 
 
 def _standard_block(std: Standard) -> str:
@@ -67,7 +68,18 @@ def render_routes(standards: list[Standard]) -> str:
 
 
 def write_routes(standards: list[Standard], root: Path) -> Path:
+    # Atomic like every other generated file. A truncated include is worse than a stale one:
+    # the web container reloads on any change to this file, and nginx refuses a config it
+    # cannot parse, so a kill mid-write leaves the running worker on the old config and the
+    # next restart unable to start at all.
     out = nginx_routes_path(root)
+    # Same argument as the document root: this volume is written by the syncer container and
+    # read by the web one, so a directory left at the writer's umask is a config the reader
+    # cannot open when the two run as different uids.
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_routes(standards), encoding="utf-8")
+    # This directory is under neither reaper: the sync only sweeps release directories and
+    # the render only sweeps the document root, while the routes file lives outside both.
+    # Writing it is the last thing a build does, so a kill here is the likeliest one.
+    reap_temp_files(out.parent)
+    atomic_write(out, render_routes(standards).encode("utf-8"))
     return out
