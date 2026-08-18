@@ -10,7 +10,7 @@ here go deeper on the parts that are easy to get wrong.
 ## Contents
 
 - **[Concepts and gotchas](concepts-and-gotchas.md)** - the non-obvious behaviour of the URL
-  contract, namespaces and content negotiation, statuses, freezing, artifact sources,
+  contract, namespaces and content negotiation, lifecycle and serving, freezing, artifact sources,
   validation, caching, and deployment. Read this once if you touch manifests or operate the
   stack.
 - **[Promoting a release from draft to stable](promoting-a-draft-release.md)** - the
@@ -30,9 +30,15 @@ here go deeper on the parts that are easy to get wrong.
   [Write-once freezing](concepts-and-gotchas.md#write-once-freezing-and-the-re-sync-trap) for
   what is refused and why, and the [CONTRIBUTING guide](../CONTRIBUTING.md) for how to run the
   same check locally before pushing.
-- **A deployment logged `INTEGRITY CHECK FAILED`** - the daily re-check found that upstream
-  bytes behind a frozen version no longer match what was recorded. Nothing published has been
-  altered; see
+- **A deployment logged `INTEGRITY CHECK FAILED`** - either the upstream bytes behind a frozen
+  version no longer match what was recorded, or a file on the volume drifted, vanished or had
+  its record damaged and was put back from upstream. Nothing published has been left altered
+  either way; see [When a cycle fails](concepts-and-gotchas.md#when-a-cycle-fails), which
+  lists every marker and what `cairn sync`'s exit codes mean.
+- **A deployment logged `PROVENANCE UNREADABLE` or `UNVERIFIABLE PUBLISHED FILE`** - these two
+  do not self-heal and will repeat every cycle. The sync has found a published release it
+  cannot establish the truth about, and refuses to guess rather than overwrite the evidence.
+  Both need a person and an independent copy of the bytes; see
   [When a cycle fails](concepts-and-gotchas.md#when-a-cycle-fails).
 
 ## About this folder

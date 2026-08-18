@@ -64,23 +64,46 @@ must be declared, and expect the served path and the declared URI to differ.
 
 ## Status values do more than label a release
 
-`status` controls both freezing and serving:
+Two independent fields control freezing and serving, plus a third that controls neither:
 
-| status | Frozen? | Served as |
+| field | values | what it decides |
 | --- | --- | --- |
-| `draft` | No, re-synced every run (tracks a branch) | Normal (200) |
-| `stable`, `beta`, `alpha` | Yes, write-once | Normal (200) |
-| `deprecated` | Yes, write-once | Normal (200), just labelled |
-| `withdrawn` | Yes, write-once | `410 Gone`, but still listed |
+| `lifecycle` | `draft`, `published` | whether the bytes may still change. Moves in one direction only |
+| `served` | `true` (default), `false` | whether the URLs answer 200 or 410 |
+| `maturity` | `alpha`, `beta`, `stable`, `deprecated` | the badge on the page. No behaviour at all |
+
+Which gives four states:
+
+| `lifecycle` | `served` | meaning | mutable? | URLs |
+| --- | --- | --- | --- | --- |
+| `draft` | `true` | work in progress, publicly visible | yes | 200 |
+| `draft` | `false` | abandoned draft | yes | 410 |
+| `published` | `true` | published | no | 200 |
+| `published` | `false` | withdrawn from service, promise intact | no | 410 |
 
 Gotchas:
 
-- **`deprecated` is still served.** Only `withdrawn` returns `410`. Deprecating something
-  does not take it offline; it is a label.
-- **Withdrawn history is not deleted.** A withdrawn release stays in the manifest and in the
+- **Un-serving is not un-publishing.** `served: false` stops the URLs answering; it does not
+  make the bytes editable, and it does not let the release be dropped from the manifest. To
+  stop serving something, that is the field you want. There is no way back to `draft`.
+- **`published` is one-way, and the PR gate enforces it.** `cairn validate --baseline` refuses
+  `published -> draft`. This replaced a six-value `status` enum in which `withdrawn` was
+  neither mutable nor served, so `stable -> withdrawn -> draft` came back mutable with
+  published bytes still on disk. Two orthogonal facts in one enum is what made that reachable.
+- **`maturity` is a label and nothing else.** Under the old enum `status: beta` was frozen and
+  served, identical to `stable` in every behavioural respect, so an author writing it to mean
+  "still moving" got a release the syncer refused to update. Freezing is `lifecycle` now.
+- **A published release must pin its own `ref`.** The schema requires it, and it must be a tag
+  or commit SHA rather than a branch. That is what makes a published release rebuildable from
+  the manifest alone if its directory is ever lost.
+- **Withdrawn history is not deleted.** An un-served release stays in the manifest and in the
   listings, and its URLs return `410 Gone` (a deliberate "this existed and is gone" signal),
   not `404`.
-- **A major line's `latest` cannot be a withdrawn release.** Validation rejects it, because
+- **An un-served published release is dormant.** The syncer does not fetch it, compare it, or
+  write to it. Withdrawing is exactly what an operator does when an upstream tag has moved or
+  gone, so probing it anyway would fail that whole standard on every verify pass forever, and
+  the manifest cannot drop a published release either.
+- **A major line's `latest` cannot be an un-served release.** Validation rejects it, because
   `latest` is what the major-line URL resolves to.
 - A `draft` release **can** be a major line's `latest` (that is the normal pre-release
   state), so `/eaf/v1` can legitimately resolve to a draft that is still tracking a branch.
@@ -184,7 +207,7 @@ valid and still be an illegal edit. CI runs it on every pull request against the
 
 A version must be exactly `MAJOR.MINOR.PATCH`, all integers. There is no support for
 pre-release or build suffixes: `1.0.0-rc1` is invalid and would also break version sorting,
-which parses three integers. To express pre-release maturity, use the `status` field
+which parses three integers. To express pre-release maturity, use the `maturity` field
 (`alpha`, `beta`, `draft`), not a version suffix.
 
 ## Caching: concrete files are effectively permanent
@@ -235,6 +258,14 @@ the volumes; nginx serves those volumes. What that means in practice:
   instead of a plain sync. This re-fetches frozen artifacts and compares them against the
   recorded SHA-256, because an ordinary sync skips them entirely and would never notice an
   upstream re-tag. The stamp for this lives next to the routes file so it survives restarts.
+- **A sync reads the copy it serves before trusting it.** Upstream matching the record says
+  nothing about the bytes on the volume, and those are the ones anyone actually downloads. So
+  once a sync has fetched an artifact and found upstream still agrees with the record, it
+  hashes the served copy too and rewrites the recorded bytes if that has drifted. Note what
+  that does and does not cover: a draft is checked on every cycle, but an ordinary sync skips
+  a frozen release without reading anything at all, which is exactly what makes it cheap.
+  Drift under a published URL is therefore caught on the `--verify` pass, so the detection
+  window for the frozen corpus is `VERIFY_INTERVAL` (24h), not `SYNC_INTERVAL` (6h).
 
 ### When a cycle fails
 
@@ -242,20 +273,187 @@ A failure is reported per standard, not per run. `cairn sync` replicates every s
 can, records the ones that failed, and exits non-zero; the loop still runs `cairn build`, so
 one broken upstream does not stop the rest of the registry reaching the site.
 
-Two errors mean a write-once promise was about to be broken, and both leave the published
-files untouched:
+The same holds one level down: a release that fails does not abandon the other releases of its
+standard. That matters most on a `--verify` pass, where the point of the run is to have *read*
+every published artifact - abandoning the releases after a failure and still exiting with a
+code meaning "ran to the end" had the loop stamp a verification of bytes it never looked at,
+suppressing the next attempt for a full interval. Failures within one standard are still
+collected and reported together, so it counts as one failed standard however many of its
+releases were involved.
+
+`cairn sync`'s exit code answers whether the run *finished*, which is a different question
+from whether it found anything:
+
+| code | meaning |
+| ---- | ------- |
+| 0 | ran to the end, nothing to report |
+| 1 | did not finish: unloadable manifest, unhandled fault, killed |
+| 3 | ran to the end, and something needs an operator |
+| 4 | ran to the end, and one or more standards failed |
+| 5 | ran to the end, and *every release it attempted* failed, so nothing was checked |
+
+That distinction is what the verify stamp is written from. A pass that finished counts as a
+verification even if it reported problems, so one persistently failing standard cannot make
+every cycle re-verify and re-download every other standard forever. A pass that did not
+finish is not stamped, because nothing can be concluded about the artifacts it never reached.
+Nor is 5: a pass in which every release failed re-read nothing, so recording it as a
+verification would suppress the next attempt for a full interval. The unit is the release, not
+the standard - a standard with one rotted release and two good ones did read two of them, and
+counting standards reported that as having checked nothing, which is what suppressed the stamp
+forever.
+
+The table is `cairn sync` only. `cairn validate` is a gate rather than a step in a loop: it
+exits 0 or refuses with 1, and a refusal there is a finding, not a crash.
+
+`cairn build` has three outcomes and they are not the same question: 0 rendered cleanly, 3
+rendered but reported something (today, only `CONTENT UNREADABLE`), and 1 produced nothing.
+Its two consumers treat 3 differently on purpose. The syncer loop reads it through
+`BUILD_RC_ATTENTION` and does not call it a failed render, because there the site is live and
+current and calling it one sends an operator to check the disk. CI and the image build both
+treat it as fatal, because there it is a mis-encoded file arriving on a branch and that is the
+cheapest place to fix it. Same code, opposite correct response, which is why the loop reads
+the number from `cairn exit-codes` rather than holding an opinion about it.
+
+Every marker is printed by `cairn` itself, so this list and the strings in the log have one
+source. They fall into three groups, and the group tells you how urgent it is.
+
+**A manifest edit would have broken a published URL.** The sync refuses and leaves the
+published files untouched. Fix the manifest; nothing is wrong with the volume.
 
 - `FROZEN VERSION CHANGED` - the bytes upstream no longer match what was recorded for a
   frozen version. Usually a moved tag. The fix is upstream: cut a new tag, and publish it as
   a new version here.
 - `FROZEN VERSION LOST AN ARTIFACT` - the manifest no longer declares a file that is already
   published at a frozen URL. Restore the artifact entry, or publish the change as a new
-  version. `cairn validate --baseline <checkout>` catches this on a pull request, which is
-  where it should be caught; reaching the syncer means it was merged.
+  version.
+- `FROZEN VERSION REPOINTED` - a published release now names a different repo or ref. The
+  bytes may be identical, but a released version's recorded origin is part of what was
+  published, so the sync will not amend it to follow the manifest.
 
-A failing verify is logged with an `INTEGRITY CHECK FAILED` marker and is deliberately not
-stamped, so the next cycle retries rather than waiting a full interval. That marker is the
-one worth alerting on.
+All three are caught by `cairn validate --baseline <checkout>` on a pull request, which is
+where they should be caught; reaching the syncer means the change was merged anyway.
+
+- `VERSION PUBLISHED` - a release became frozen on this cycle, so the write-once checks did
+  not apply to it: on the cycle that publishes a version, the manifest is not contradicting a
+  promise, it is making one. Expected exactly once per version, when you promote a draft, and
+  the run exits 3 so it is visible.
+
+  It is reported because nothing on the volume can prove it was intended. Whether the guards
+  run is decided by the lifecycle recorded in `provenance.json`, which lives on the volume those
+  guards protect, so a record that has rotted or been edited to `draft` produces this line too
+  - and in that case the bytes the release just adopted are whatever upstream served, with no
+  check against what was published. If you see this and you did not promote a version, treat
+  the release as suspect and compare it against an independent copy.
+
+- `PUBLISHED VERSION UNFROZEN` - `provenance.json` records this version as published, and the
+  manifest now says `lifecycle: draft`. That un-freezes bytes already handed out, and the
+  next sync would overwrite them in place. Restore the lifecycle, or set `served: false` and
+  publish the change as a new one. `cairn validate --baseline` refuses the same edit on a pull
+  request; seeing it from the syncer means the change arrived by some route that skipped the
+  gate.
+
+- `WRITE-ONCE VIOLATION` - the same three problems seen from that gate rather than from the
+  syncer, and the only one of these you should normally meet. It is what `cairn validate
+  --baseline` prints on a pull request, listing every edit that would change or remove an
+  already-published URL, and it refuses with exit 1 so the branch cannot merge. Nothing has
+  been written anywhere; fix the manifest.
+
+- `UPSTREAM UNREACHABLE` - only from `cairn sync --dry-run`, which is what CI runs to check
+  that every declared source still answers. The manifest points somewhere that did not
+  respond: a repo made private, a renamed branch, a deleted tag, or an outage. Nothing has
+  been written, and a real sync would fail on the same artifacts.
+
+**The sync cannot tell what is true and will not guess.** These need a person, do not
+self-heal, and repeat every cycle until resolved. They are the most important markers here.
+
+- `PROVENANCE UNREADABLE` - a published release's `provenance.json` is present but cannot be
+  parsed. That file is the only record of what was published, so rebuilding it would adopt
+  whatever upstream serves now and destroy the evidence in the same run. Restore it from a
+  backup, or confirm the bytes on disk against an independent copy and re-publish the version
+  deliberately. Drafts are rebuilt instead of refused, and reported under `INTEGRITY CHECK
+  FAILED`.
+- `UNVERIFIABLE PUBLISHED FILE` - a published file has no recorded checksum and no longer
+  matches upstream. Nothing available can say whether the served copy rotted or upstream was
+  re-tagged, and the two need opposite responses, so the sync refuses to pick one. Compare
+  against an independent copy before doing anything.
+- `NO CHECKSUM RECORDED` - a release was about to be written with an artifact carrying no
+  checksum, which would put a claim in `SHA256SUMS` that nothing could later verify. The
+  release is refused before anything is written.
+
+`PROVENANCE UNAVAILABLE` is the near neighbour of the first of these and is deliberately not
+in this group: the record could not be *read at all*, which is usually a mode or a mount
+rather than damage to the bytes. The sync repairs the mode if it can, writes nothing, and
+retries on the next cycle rather than asking anyone to restore a backup. If it persists,
+check ownership on the volume.
+
+**Something on the volume was wrong.** Service is restored automatically where it can be.
+
+- `INTEGRITY CHECK FAILED` - one of: a standard could not be verified; a served file did not
+  match its recorded checksum and was rewritten from upstream; a published file had vanished
+  and was restored; or a draft's damaged provenance was rebuilt. Where a repair happened the
+  published bytes are correct again and service needs no action, but something wrote to files
+  nothing should be writing to, and that is worth understanding before it reaches a file
+  whose upstream is gone.
+- `CORRUPTED FILE(S) RESTORED` and `DAMAGED RECORD(S) REBUILT` - the same two repairs, counted
+  on the one-line summary that `cairn sync` prints on stdout, where the `INTEGRITY CHECK
+  FAILED` block above says the same thing at length on stderr. They carry no information the
+  block does not; they exist so that the count is visible in a log tailing stdout alone.
+  Either one appearing means something was repaired, which on its own exits 3 - but a
+  standard failing in the same run outranks it, so seeing one of these alongside exit 4 (or 5
+  if every release failed) is correct and means both things happened.
+- `PERMISSION REPAIR FAILED` - a published file cannot be read by the web server and its mode
+  could not be changed, so that URL answers 403 until someone with the right ownership fixes
+  it. Usually a volume written by a different uid.
+- `CONTENT UNREADABLE` - the optional prose beside a manifest (`content/overview.md`, or a
+  release's notes) could not be read, so those pages fell back to their one-line summary. The
+  site is live and the URLs all resolve; the pages are just missing their descriptions. Fix
+  the file's encoding or its permissions.
+- `BUILD FAILED` - printed by the syncer loop, not by `cairn`. The replication succeeded but
+  the render did not, so the site is serving its previous state: correct, just not current.
+  Almost always the volume being full or mounted read-only. Note that this deliberately does
+  not suppress the verification stamp, because whether the render succeeded says nothing
+  about whether the artifacts were checked.
+
+  It means the render produced nothing, and only that. A build that finished but reported
+  `CONTENT UNREADABLE` exits 3, which the loop reads through `BUILD_RC_ATTENTION` and does not
+  treat as a failure - the site is current in that case, and sending an operator to check the
+  disk over an encoding problem in one markdown file is a false alarm the loop used to raise.
+
+## DTDs are not supported yet
+
+Cairn serves XSD, RelaxNG, NVDL, Schematron, tag libraries and documentation. It does **not**
+yet serve DTDs correctly, which matters because a `DOCTYPE` in an XML header is exactly the
+kind of fixed URI this service exists to keep resolving:
+
+```xml
+<!DOCTYPE ead SYSTEM "https://standards.openpreservation.org/ead/v2.0.2/ead.dtd">
+```
+
+Publish a `.dtd` today and it is served as `application/octet-stream`, because nothing maps the
+extension. Some parsers accept that and some refuse it, which is the worst of both.
+
+Four things need changing, and they are small:
+
+1. `util._EXT_MEDIA_TYPES` needs `.dtd`, and almost certainly `.mod` and `.ent` too. A real DTD
+   is normally split into modules and entity files that it pulls in by relative reference, so
+   serving the DTD without them publishes a document that cannot be resolved. The registered
+   media type is `application/xml-dtd` (RFC 3023).
+2. `deploy/nginx.conf`'s `types` block maps `xsd rng nvdl sch` and needs the same extensions,
+   or nginx will answer with `default_type` regardless of what the manifest says. Add them to
+   `gzip_types` as well; DTDs are text and compress well.
+3. `schemas/standard.schema.json`'s `role` enum has no `dtd`, so a DTD has to be declared as
+   `other` today. That is what drives the RDDL nature and the grouping on the release page.
+4. `render.RDDL_NATURE` and `RDDL_PURPOSE` need a `dtd` entry. Without one it falls back to
+   `http://rddl.org/natures#resource`, which tells an XML toolchain nothing about what the
+   resource is; the nature for a DTD is its media type.
+
+The relative-reference point in (1) is the one to think about before publishing anything: the
+modules have to sit beside the DTD under the same version directory and be declared as their
+own artifacts, or the DTD resolves at the top and fails one level down. Write-once applies to
+each of those URLs individually once the version is not a draft.
+
+Nothing here is blocked; it has simply not been needed. All three standards currently hosted
+are schema-based.
 
 ## A `GITHUB_TOKEN` is optional but recommended
 

@@ -71,7 +71,7 @@ The write-once check is the one most likely to stop you, and it is deliberate. A
 branch, these are refused on any release that is already published (anything not `draft`):
 
 - removing an artifact, or removing the release itself - those URLs are live
-- reverting the status to `draft` - that would let later syncs overwrite published bytes
+- reverting `lifecycle` to `draft` - that would let later syncs overwrite published bytes
 - repointing where an artifact comes from (`path`, `repo`, `ref`, or an inherited `source.ref`)
   - same URL, different bytes
 
@@ -82,6 +82,10 @@ yourself before pushing:
 git worktree add /tmp/baseline origin/main
 cairn validate --baseline /tmp/baseline
 ```
+
+Put the baseline outside the working copy, as above. A path inside it resolves back to the
+workspace itself, which would compare the manifests against themselves and pass no matter
+what; `cairn validate` refuses that rather than reporting a check it did not perform.
 
 ## Versioning rules
 
@@ -101,7 +105,7 @@ trap that can silently freeze the wrong bytes. Follow the runbook:
 More detailed guides live in [docs/](docs/README.md):
 
 - [Concepts and gotchas](docs/concepts-and-gotchas.md) - the non-obvious behaviour of the
-  URL contract, namespaces and content negotiation, statuses, freezing, artifact sources,
+  URL contract, namespaces and content negotiation, lifecycle and serving, freezing, artifact sources,
   validation, caching, and deployment.
 - [Promoting a release from draft to stable](docs/promoting-a-draft-release.md) - freezing a
   release safely.

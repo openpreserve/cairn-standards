@@ -4,7 +4,7 @@ This is the step-by-step for taking a standard's release from `draft` (auto-trac
 branch) to a frozen, permanent release. It captures the gotchas that are easy to miss,
 because getting this wrong silently freezes the wrong bytes or the wrong provenance.
 
-If you only remember one thing: **flipping the status word is not enough.** You must also
+If you only remember one thing: **flipping `lifecycle` is not enough.** You must also
 pin the git ref to a tag, and because the version was already synced as a draft you must
 clear its old replica so it re-freezes against that tag.
 
@@ -12,20 +12,23 @@ clear its old replica so it re-freezes against that tag.
 
 ## Background: what "frozen" actually means
 
-Every release has a `status`. Only one value is treated as still-moving:
+Every release has a `lifecycle`, and it has exactly two values:
 
 ```text
-draft  -> mutable: re-fetched and overwritten on every sync (tracks a branch)
-everything else (stable, beta, alpha, deprecated, withdrawn) -> frozen, write-once
+draft      -> mutable: re-fetched and overwritten on every sync (tracks a branch)
+published  -> frozen, write-once, forever
 ```
 
-This is defined by `MUTABLE_STATUSES = {"draft"}` in `src/cairn/manifest.py`. A `draft`
+This is defined by `Lifecycle` in `src/cairn/manifest.py`. Serving is a separate field
+(`served`), so withdrawing a release later does not un-publish it and cannot return it to
+`draft`; `cairn validate --baseline` refuses that edit on the pull request. A `draft`
 release pointed at a branch is pulled fresh every sync (the deployment syncs every 6h by
 default), so the served bytes follow the branch tip. A frozen release records its bytes,
 a SHA-256, and provenance once, and from then on sync skips it. If the upstream bytes at
 that ref ever change, a `--verify` sync fails loudly instead of silently following.
 
-"Fixed" is not a status value. The status you want at an official release is `stable`.
+"Fixed" is not a value. What you want at an official release is `lifecycle: published`, with
+`maturity: stable` as the label on the page and `ref:` pinned to the tag.
 
 ---
 
@@ -36,20 +39,27 @@ Take EAD 4.0.0 as the worked example. In `standards/ead/standard.yaml`:
 ```yaml
 releases:
   - version: 4.0.0
-    status: stable          # was: draft
-    ref: v4.0.0             # NEW: pin to the real git tag (was inheriting a branch)
+    lifecycle: published    # was: draft
+    maturity: stable        # the badge on the page; no effect on freezing
+    ref: v4.0.0             # REQUIRED once published: the real git tag, never a branch
     released: 2026-07-31     # optional, good provenance
     artifacts:
       ...
 ```
 
-1. **`status: draft` -> `status: stable`.** This is what makes the release write-once.
+1. **`lifecycle: draft` -> `lifecycle: published`.** This is what makes the release
+   write-once, and it is one-way: `cairn validate --baseline` refuses the reverse on a pull
+   request. If you need to stop serving it later, set `served: false`, which leaves the
+   promise intact.
 
-2. **Pin `ref` to a tag.** This is the edit people forget. Before promotion the release
-   inherits `source.ref`, which points at a branch (for example `release_2026_07`).
-   Freezing against a branch is meaningless, because the branch keeps moving. A frozen
-   release must point at something immutable: a git tag, or a commit SHA. Add a `ref:` on
+2. **Pin `ref` to a tag.** The schema requires this as soon as `lifecycle` is `published`, so
+   a promotion without it fails validation rather than shipping. Before promotion the release
+   may inherit `source.ref`, which points at a branch (for example `release_2026_07`).
+   Freezing against a branch is meaningless, because the branch keeps moving. Add a `ref:` on
    the release; it overrides `source.ref` for that release only.
+
+3. **`maturity` is optional and cosmetic.** It sets the badge. It has no effect on freezing
+   or serving, so nothing breaks if you leave it out.
 
 `released:` is optional but worth setting for provenance. It uses `YYYY-MM-DD` format.
 
@@ -75,104 +85,35 @@ Rule of thumb: after editing, scan the whole release for the word `ref` (at
 
 ---
 
-## The re-freeze gotcha: why flipping the status is not enough
+## What happens on the publication cycle
 
-A version that has been running as a `draft` has **already been synced**. Its replica
-exists on disk at `site/<id>/v<version>/`, including a `provenance.json` that records the
-bytes fetched from the branch (the wrong source for a frozen release).
+A version that has been running as a `draft` has **already been synced**. Its replica exists on
+disk at `site/<id>/v<version>/`, including a `provenance.json` recording bytes fetched from the
+branch, which is the wrong source for a published release.
 
-The freeze logic in `sync.py` checks for that prior provenance. When it finds it, it
-treats the version as already frozen and **skips the re-fetch entirely**. So if you just
-change the status and re-sync, you freeze the stale branch-era bytes and the sync records
-the branch (not your tag) as the source. The bytes might even be identical if the tag was
-cut from the branch tip, but the recorded provenance will still cite the branch, which is
-wrong for a permanent release.
+The syncer handles this. A release does not simply *have* a frozen lifecycle, it *becomes*
+published, and that cycle is the publication: the record says `draft`, the manifest says
+`published`, so the fast path is skipped, the artifacts are re-fetched at the pinned `ref`, and
+provenance is rewritten to cite the tag. From the next cycle on the release is frozen and the
+write-once guards apply.
 
-The fix: discard that version's replica so sync re-fetches cleanly from the tag. This is
-safe because `site/` is a regenerable build output that is not committed to git (it is in
-`.gitignore`).
+You do not need to clear the replica by hand, and you should not: on a deployment the volume is
+the published record, and `rm -rf` on a release directory is indistinguishable from losing it.
 
----
-
-## Local procedure
-
-After making the manifest edits above:
-
-```bash
-rm -rf site/ead/v4.0.0        # discard the draft-era replica so it re-freezes from the tag
-cairn validate                # check the manifest against the schema
-cairn sync --standard ead     # fetch from the tag, record checksum + tag provenance = the freeze
-cairn build                   # re-render landing pages, RDDL, catalog
-```
-
-With no prior provenance present, sync fetches from the tag, computes the SHA-256, and
-writes a fresh `provenance.json` citing the tag. That write is the freeze. Open
-`site/<id>/v<version>/provenance.json` afterwards and confirm the `ref` and `url` fields
-name your tag, not a branch.
-
----
-
-## Open the pull request
-
-Commit only the manifest change. The `site/` output is regenerated by the deployment, so
-it is not part of the PR. CI validates the manifest and does a dry-run reachability sync.
-On merge, the publish workflow syncs, builds, and deploys.
-
----
-
-## Production / deployment gotcha
-
-The same stale-draft problem exists in production, for the same reason. The deployed
-syncer writes into a persistent volume, and that volume already holds the draft-era
-replica of the version from the 6h sync loop. Flipping the manifest to `stable` does not
-by itself clear that stale replica.
-
-So after the manifest merges, the operator must do one of:
-
-- clear that version's folder from the syncer volume, so the next sync re-freezes it from
-  the tag (same reasoning as `rm -rf site/...` locally), or
-- run a `cairn sync --verify` against the volume to confirm the tag bytes match what was
-  frozen and surface any mismatch.
-
-Otherwise production keeps serving the draft-era provenance even though the manifest now
-says `stable`.
-
-**This is no longer optional, and it is now time-limited.** The syncer runs
-`cairn sync --verify` by itself every `VERIFY_INTERVAL` (24h by default), and on the first
-cycle after any restart. If the branch tip moved between the last draft sync and the tag you
-pinned to, that automatic verify compares the tag's bytes against the branch-era hashes still
-recorded in the volume, fails with `FROZEN VERSION CHANGED`, and keeps failing every cycle
-until someone clears the replica. Do the clear as part of the promotion, not afterwards.
-
-To check in advance whether you are exposed, compare the two refs before merging: if the
-files are byte-identical at the branch and at the tag, the recorded hashes still match and
-the automatic verify will pass.
-
----
-
-## After promotion: verify is your integrity guard
-
-Once a release is frozen, ordinary syncs skip it. The integrity check runs automatically in
-the deployment every `VERIFY_INTERVAL`, and can be run by hand with:
-
-```bash
-cairn sync --verify
-```
-
-This re-fetches the frozen artifacts and compares them against the recorded SHA-256. If
-anyone ever re-tags upstream or mutates the bytes behind that ref, it fails loudly with
-`FROZEN VERSION CHANGED` rather than quietly serving different bytes. The intended
-response to that error is never to overwrite the release: cut a new version instead.
+The publication is reported. `cairn sync` exits 3 and logs `VERSION PUBLISHED`, because that is
+the one cycle on which the write-once checks do not apply. Expect it when you promote. If you
+see it when you promoted nothing, a release directory was lost and has just been rebuilt from
+its pinned ref, which is worth looking into.
 
 ---
 
 ## Quick checklist
 
-- [ ] `status:` changed from `draft` to `stable`
-- [ ] release-level `ref:` pinned to a tag (or commit), not a branch
+- [ ] `lifecycle:` changed from `draft` to `published`
+- [ ] release-level `ref:` pinned to a tag (or commit), not a branch (the schema enforces this)
 - [ ] every per-artifact `ref:` in the release pinned to a tag or commit, not a branch
+- [ ] `maturity: stable` set if you want the badge to say so
 - [ ] `released:` date set (optional but recommended)
-- [ ] stale replica cleared locally (`rm -rf site/<id>/v<version>`)
 - [ ] `cairn validate` clean
 - [ ] `cairn sync --standard <id>` re-fetched from the tag
 - [ ] `provenance.json` checked: `ref`/`url` name the tag, not a branch
@@ -184,7 +125,8 @@ response to that error is never to overwrite the release: cut a new version inst
 
 ## Reference
 
-- Status values: `stable`, `beta`, `alpha`, `draft`, `deprecated`, `withdrawn`
+- Lifecycle values: `draft`, `published`. Serving: `served: true|false`.
+- Maturity labels (display only): `alpha`, `beta`, `stable`, `deprecated`
   (`schemas/standard.schema.json`).
 - Only `draft` is mutable; all others are write-once (`src/cairn/manifest.py`,
   `MUTABLE_STATUSES`).

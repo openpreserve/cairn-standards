@@ -87,9 +87,11 @@ The stack is three small services around two shared volumes:
   merged standard appears without a manual rebuild. It reads manifests from the image-baked
   copy, a bind-mounted checkout, or a `git clone` (`REPO_URL`) - see `deploy/docker-compose.yml`.
   Every 24h (`VERIFY_INTERVAL`) that cycle runs as `cairn sync --verify`, re-reading the bytes
-  behind frozen versions so an upstream re-tag is caught rather than going unnoticed. A
-  standard that fails is reported and skipped; the others still sync and the site still
-  re-renders.
+  behind frozen versions so an upstream re-tag is caught rather than going unnoticed. Anything
+  it fetches has its served copy hashed as well, and a copy that has drifted from its recorded
+  checksum is rewritten: for drafts that happens every cycle, for frozen versions on the 24h
+  pass. A standard that fails is reported and skipped; the others still sync and the site
+  still re-renders.
 - **web** (nginx) serves the volumes on `:8080` (plain HTTP), seeds them on first boot from a
   baked snapshot, and reloads within a minute of the generated routes changing. nginx runs as
   PID 1, so if it dies the container exits and the restart policy brings it back rather than
