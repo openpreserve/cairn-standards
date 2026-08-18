@@ -8,6 +8,13 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares >=3.11 (enum.StrEnum), and both container images pin 3.12. Testing
+        # only 3.12 left the floor asserted by packaging metadata alone: a 3.12-only feature
+        # would pass here and then refuse to install, or fail at import, for a 3.11 user.
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,23 +24,13 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install
         run: pip install -e ".[dev]"
 
       - name: Validate manifests
         run: cairn validate
-
-      # Write-once is a property of the manifest *diff*, so it is checked here, against the
-      # branch being merged into, rather than only in the syncer. Enforcing it solely at
-      # replication time meant a change that unpublishes a live URL merged green and failed
-      # on the deployment instead, where nobody is watching and the site stops updating.
-      - name: Write-once check against the base branch
-        if: github.event_name == 'pull_request'
-        run: |
-          git worktree add /tmp/baseline "origin/${{ github.base_ref }}"
-          cairn validate --baseline /tmp/baseline
 
       - name: Unit tests
         run: pytest -q
@@ -44,6 +41,11 @@ jobs:
       # against it, because nothing checked the deployment files.
       - name: Deployment files parse
         run: |
+          # The ghcr overlay requires CAIRN_TAG and deliberately has no default, so compose
+          # cannot even parse it without a value, and .env is git-ignored. Copying the example
+          # is what deploy/.env.example tells an operator to do, so this checks that path works
+          # as well as checking the compose files.
+          cp deploy/.env.example deploy/.env
           docker compose -f deploy/docker-compose.yml config >/dev/null
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.ghcr.yml config >/dev/null
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml config >/dev/null
@@ -51,10 +53,35 @@ jobs:
           sh -n deploy/sync-loop.sh
           sh -n deploy/web-entrypoint.sh
 
+      # One interpreter only. The matrix exists to prove the declared floor imports and its
+      # tests pass, which needs no network; running this on both doubled the requests to
+      # raw.githubusercontent.com at the same time _reachable started making up to three per
+      # artifact, and the extra unauthenticated volume on a fork's pull request is itself the
+      # 429 the retry was added to absorb.
       - name: Dry-run sync (upstream reachability)
+        if: matrix.python-version == '3.12'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: cairn sync --dry-run
 
+      # Exit 3 (a page fell back to its one-line summary because prose beside a manifest could
+      # not be read) fails this step on purpose. The syncer loop deliberately does not treat
+      # that as a failed render, because there the site is live and current and the alternative
+      # is a false alarm; here it is a mis-encoded file arriving on a branch, which is exactly
+      # where it is cheap to fix. Same code, opposite correct response.
       - name: Render build
         run: cairn build
+
+      # Last, deliberately. This is the only step that depends on another revision of the
+      # repository, so it is the only one that can fail for reasons unrelated to the code under
+      # test - and a failed step aborts the job, so running it earlier hid the unit tests, the
+      # deployment files, the upstream probe and the render behind it. A real write-once
+      # violation still turns the job red; it just no longer costs you every other answer.
+      #
+      # It cannot span a manifest format change: the baseline worktree is validated against the
+      # schema it carries and then built by this revision's model code.
+      - name: Write-once check against the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git worktree add /tmp/baseline "origin/${{ github.base_ref }}"
+          cairn validate --baseline /tmp/baseline

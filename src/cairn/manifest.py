@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -11,18 +12,31 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from . import BASE_URL
-from .config import schema_path, standards_dir
-from .util import media_type_for, semver_key
+from .config import GENERATED_NAMES, schema_path, standards_dir
+from .util import _SAFE_ARTIFACT_NAME, DecodeError, media_type_for, read_text, semver_key
 
 
 class ManifestError(Exception):
     """Raised when a manifest is structurally or semantically invalid."""
 
 
-# Releases with these statuses are still moving (e.g. tracking a pre-release branch): they
-# are re-fetched and overwritten on every sync rather than frozen. Everything else is
-# write-once - a released version's bytes must never change.
-MUTABLE_STATUSES = {"draft"}
+class Lifecycle(StrEnum):
+    """Whether a release's bytes may still change.
+
+    This carries the write-once promise, and it is the only field that does. It moves in one
+    direction only, draft -> published, and `compare_to_baseline` refuses the reverse, so
+    "has this version ever been published?" is answerable from the manifest alone and cannot
+    be laundered by any sequence of edits.
+
+    It replaced a six-value `status` enum that conflated this question with "does the URL
+    answer 200?". `withdrawn` was the value that was neither mutable nor served, so every
+    predicate written as "is it mutable?" or "is it served?" got it wrong, and a release
+    routed stable -> withdrawn -> draft came back mutable with published bytes still on disk.
+    Two orthogonal facts in one enum is what made that reachable; they are separate fields now.
+    """
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
 
 
 # --------------------------------------------------------------------------- models
@@ -49,8 +63,10 @@ class Artifact:
 @dataclass
 class Release:
     version: str
-    status: str
+    lifecycle: Lifecycle
     artifacts: list[Artifact]
+    served: bool = True
+    maturity: str | None = None
     ref: str | None = None
     released: str | None = None
     notes: str | None = None
@@ -60,9 +76,37 @@ class Release:
         return int(self.version.split(".")[0])
 
     @property
+    def is_mutable(self) -> bool:
+        """Whether a sync may overwrite these bytes in place."""
+        return self.lifecycle is Lifecycle.DRAFT
+
+    @property
+    def ever_published(self) -> bool:
+        """Whether this version has ever made a promise a URL is holding.
+
+        True forever once set, regardless of whether it is currently served: un-serving a
+        release stops answering for it, it does not un-promise it.
+        """
+        return self.lifecycle is not Lifecycle.DRAFT
+
+    @property
     def is_served(self) -> bool:
-        """Withdrawn releases are listed but served as 410."""
-        return self.status != "withdrawn"
+        """Un-served releases stay listed but answer 410."""
+        return self.served
+
+    @property
+    def label(self) -> str:
+        """The single word shown on the page badge. Display only, never a guard.
+
+        Derived rather than stored so that the word on the page cannot disagree with the
+        behaviour: the old `status` field was both at once, which is how `beta` came to mean
+        a frozen release that an author had every reason to read as a moving one.
+        """
+        if not self.served:
+            return "withdrawn"
+        if self.maturity:
+            return self.maturity
+        return "stable" if self.ever_published else "draft"
 
 
 @dataclass
@@ -140,7 +184,19 @@ class Standard:
 
 
 def _validator(root: Path) -> Draft202012Validator:
-    schema = json.loads(schema_path(root).read_text(encoding="utf-8"))
+    path = schema_path(root)
+    # find_root falls back to whatever it was given when it finds no marker, so a mistyped
+    # path arrives here intact and would otherwise surface as a bare FileNotFoundError
+    # traceback from read_text, which main() does not catch.
+    if not path.is_file():
+        raise ManifestError(
+            f"{root}: no manifest schema at {path}. Is this a Cairn workspace? "
+            f"It needs both standards/ and schemas/standard.schema.json."
+        )
+    try:
+        schema = json.loads(read_text(path))
+    except (OSError, DecodeError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"{path}: cannot be read as the manifest schema: {exc}") from exc
     return Draft202012Validator(schema)
 
 
@@ -179,8 +235,10 @@ def _build(data: dict[str, Any], directory: Path) -> Standard:
         releases.append(
             Release(
                 version=r["version"],
-                status=r["status"],
+                lifecycle=Lifecycle(r["lifecycle"]),
                 artifacts=artifacts,
+                served=r.get("served", True),
+                maturity=r.get("maturity"),
                 ref=r.get("ref"),
                 released=r.get("released"),
                 notes=r.get("notes"),
@@ -240,6 +298,24 @@ def _semantic_checks(std: Standard, manifest_file: Path) -> list[str]:
         if dupe_names:
             errors.append(f"release {rel.version}: duplicate artifact names: {', '.join(sorted(dupe_names))}")
         for art in rel.artifacts:
+            # Checked here as well as in the schema. The schema's pattern has to be ECMA-262 so
+            # that editors and other validators agree with us, and there `$` also matches before
+            # a trailing newline; this anchor does not. The name is joined onto the release
+            # directory and handed to atomic_write() and unlink().
+            if not _SAFE_ARTIFACT_NAME.match(art.name):
+                errors.append(
+                    f"release {rel.version}: artifact name {art.name!r} is not a bare filename"
+                )
+            # A collision is not merely confusing: the sync writes the artifact and then
+            # overwrites that same path with its own metadata, so SHA256SUMS records a checksum
+            # for a file holding the provenance document and `sha256sum -c` fails forever. On a
+            # published release the restore then leaves non-JSON in provenance.json, which the
+            # next cycle refuses as unreadable.
+            if art.name in GENERATED_NAMES:
+                errors.append(
+                    f"release {rel.version}: artifact name {art.name!r} is a file cairn generates "
+                    f"({', '.join(sorted(GENERATED_NAMES))}); it would be overwritten by its own metadata"
+                )
             required = _LOCATOR_REQUIREMENTS.get(art.from_, ())
             for field_name in required:
                 if not getattr(art, field_name):
@@ -255,8 +331,10 @@ def load_standard(directory: Path, validator: Draft202012Validator | None = None
     if not manifest_file.is_file():
         raise ManifestError(f"{directory}: missing standard.yaml")
     try:
-        data = yaml.safe_load(manifest_file.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:  # pragma: no cover - passthrough
+        data = yaml.safe_load(read_text(manifest_file))
+    except (OSError, DecodeError) as exc:
+        raise ManifestError(f"{manifest_file}: cannot be read: {exc}") from exc
+    except yaml.YAMLError as exc:
         raise ManifestError(f"{manifest_file}: invalid YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise ManifestError(f"{manifest_file}: top level must be a mapping")
@@ -274,7 +352,19 @@ def load_standard(directory: Path, validator: Draft202012Validator | None = None
         ]
         raise ManifestError(f"{manifest_file}: schema validation failed:\n" + "\n".join(lines))
 
-    std = _build(data, directory)
+    # _build reads keys the schema has just guaranteed - but the schema it was checked against
+    # is the one in *that* workspace, and a baseline worktree carries its own. So a manifest
+    # from before a schema change passes its own validator and then meets model code that
+    # expects the new shape. A KeyError there is a traceback with no marker and no file name;
+    # this says which field and which revision.
+    try:
+        std = _build(data, directory)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"{manifest_file}: valid against the schema beside it, but this build of cairn cannot "
+            f"read it ({exc!r}). That normally means the manifest predates a schema change - the "
+            f"write-once baseline check compares against another revision, and it cannot span one."
+        ) from exc
     sem_errors = _semantic_checks(std, manifest_file)
     if sem_errors:
         raise ManifestError(
@@ -310,34 +400,66 @@ def compare_to_baseline(current: list[Standard], baseline: list[Standard]) -> li
     means the offending change merges green and fails on the deployment instead, where the
     person who can fix it is not looking and the site has already stopped updating.
 
-    A release is treated as published once its baseline status is anything but `draft`.
-    `withdrawn` is exempt because that status unpublishes a release deliberately.
+    A release is published once its baseline lifecycle is `published`, and stays published
+    for every later comparison. Whether it is currently served is deliberately not consulted:
+    an earlier version of this function skipped un-served releases entirely, which let a
+    published release be un-served in one commit and reverted to `draft` in the next with
+    every check below never running.
     """
     errors: list[str] = []
-    baseline_by_id = {s.id: s for s in baseline}
+    current_by_id = {s.id: s for s in current}
 
-    for std in current:
-        was = baseline_by_id.get(std.id)
-        if was is None:
+    # Driven from the baseline, because the question is "what was published before, and is it
+    # still there?". Iterating the current set instead asks only about standards that still
+    # exist, so deleting one outright, or renaming its id (a delete plus an add), was never
+    # examined at all and passed the gate clean.
+    for was in baseline:
+        std = current_by_id.get(was.id)
+        if std is None:
+            published = sorted(
+                (r.version for r in was.releases if r.ever_published),
+                key=semver_key,
+            )
+            if published:
+                errors.append(
+                    f"{was.id}: the whole standard was removed, but v{', v'.join(published)} "
+                    f"{'is' if len(published) == 1 else 'are'} published. Every URL under "
+                    f"/{was.id}/ would stop resolving. If it is being renamed, the old id has to "
+                    f"stay published."
+                )
             continue
         for old_rel in was.releases:
-            if old_rel.status in MUTABLE_STATUSES or not old_rel.is_served:
+            if not old_rel.ever_published:
                 continue
             new_rel = std.release(old_rel.version)
             if new_rel is None:
                 errors.append(
-                    f"{std.id} v{old_rel.version}: release was '{old_rel.status}' and is now gone. "
+                    f"{std.id} v{old_rel.version}: release was published and is now gone. "
                     f"Published versions must stay in the manifest."
                 )
                 continue
-            # Reverting a published release to a mutable status un-freezes bytes that have
+            # The one forbidden transition. Reverting to draft un-freezes bytes that have
             # already been handed out, which defeats the guarantee just as surely as editing
             # them: the next sync would start overwriting the version in place.
-            if new_rel.status in MUTABLE_STATUSES:
+            if not new_rel.ever_published:
                 errors.append(
-                    f"{std.id} v{old_rel.version}: status went from '{old_rel.status}' back to "
-                    f"'{new_rel.status}'. That un-freezes a published version and lets later "
-                    f"syncs overwrite it in place."
+                    f"{std.id} v{old_rel.version}: lifecycle went from 'published' back to "
+                    f"'{new_rel.lifecycle}'. That un-freezes a published version and lets later "
+                    f"syncs overwrite it in place. To stop serving it, set served: false instead."
+                )
+
+            # Adding to a published release changes what that version publishes, retroactively,
+            # exactly as removing does. It also has to be refused because the syncer relies on
+            # it: an artifact with no record and no file on a published release is read as one
+            # the volume lost, not one the manifest gained, and without this gate that edit
+            # merged green and then failed the standard every cycle with UNVERIFIABLE PUBLISHED
+            # FILE, telling the operator to restore a file that had never existed.
+            added = sorted({a.name for a in new_rel.artifacts} - {a.name for a in old_rel.artifacts})
+            if added:
+                errors.append(
+                    f"{std.id} v{old_rel.version}: artifact(s) added to a published release: "
+                    f"{', '.join(added)}. What a version publishes is fixed once it is published; "
+                    f"publish the addition as a new version."
                 )
 
             lost = sorted({a.name for a in old_rel.artifacts} - {a.name for a in new_rel.artifacts})

@@ -28,7 +28,7 @@ major_lines:
 
 releases:
   - version: 4.0.0
-    status: draft
+    lifecycle: draft
     artifacts:
       - name: ead.xsd
         role: schema

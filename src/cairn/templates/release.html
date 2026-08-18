@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ std.title }} v{{ rel.version }}{% endblock %}
-{% block description %}{{ std.title }}, release {{ rel.version }} ({{ rel.status }}).{% endblock %}
+{% block description %}{{ std.title }}, release {{ rel.version }} ({{ rel.label }}).{% endblock %}
 {% block content %}
   <p class="crumb"><a href="/">Standards</a> / <a href="/{{ std.id }}">{{ std.id }}</a> / v{{ rel.version }}</p>
-  <h1>{{ std.title }} <span class="note">v{{ rel.version }}</span> <span class="badge {{ rel.status }}">{{ rel.status }}</span></h1>
+  <h1>{{ std.title }} <span class="note">v{{ rel.version }}</span> <span class="badge {{ rel.label }}">{{ rel.label }}</span></h1>
 
   <dl class="kv">
     <dt>Namespace</dt><dd><code>{{ std.namespace_for(rel.major) }}</code></dd>

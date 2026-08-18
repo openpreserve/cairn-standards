@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime, timezone
+from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 
@@ -12,10 +12,10 @@ import markdown as md
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from . import BASE_URL, __version__
-from .config import site_dir
-from .manifest import Release, Standard
+from .config import PROVENANCE_NAME, RELEASE_PAGE_NAME, site_dir
+from .manifest import ManifestError, Release, Standard
 from .nginx import write_routes
-from .util import atomic_write
+from .util import DecodeError, atomic_write, is_provenance_record_set, reap_temp_tree, read_text
 
 ROLE_LABELS = {
     "schema": "W3C XML Schema (XSD)",
@@ -98,15 +98,38 @@ def _humansize(n: int | None) -> str:
     return f"{n} B"
 
 
-def _load_provenance(root: Path, std_id: str, version: str) -> dict | None:
-    path = site_dir(root) / std_id / f"v{version}" / "provenance.json"
+@lru_cache(maxsize=None)
+def _load_provenance(vdir: Path) -> dict | None:
+    """Read a release's provenance for display, or None if it cannot be used.
+
+    The render must survive anything the sync refuses. A damaged record on one release used
+    to raise out of `cairn build`, which returns non-zero, which stops the whole cycle - so
+    one rotted file froze every healthy standard's pages, routes and 410s at their last
+    state. The sync reports the damage and refuses that release; the site keeps rendering
+    with whatever it can show, which is the checksums missing from one release's page.
+
+    Keyed on the release directory rather than on the workspace root, because that is the path
+    it actually opens: the root is resolved through `site_dir`, which CAIRN_SITE_DIR overrides,
+    so two builds under one root but different document roots shared a cache entry.
+
+    Memoised for the duration of one build. Three call sites want the same record - the release
+    page context, the namespace document of a major line's latest release, and the catalog - so
+    every build was opening, decoding and JSON-parsing each file three times. The cache is
+    cleared at the start of each render, because a build runs after a sync that has just
+    rewritten these files and a process-lifetime cache would serve the previous cycle's.
+
+    The shape check is shared with the sync rather than restated. The two had already drifted
+    once - the sync rejected valid JSON of the wrong shape a release before this side learned
+    to - and the whole point of a shape contract is that both ends hold the same one.
+    """
+    path = vdir / PROVENANCE_NAME
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(read_text(path))
+    except (json.JSONDecodeError, DecodeError, OSError):
         return None
+    return data if is_provenance_record_set(data) else None
 
 
 _RAW_PREFIX = "https://raw.githubusercontent.com/"
@@ -127,7 +150,7 @@ def _github_link(source: dict | None) -> str | None:
 
 
 def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
-    prov = _load_provenance(root, std.id, rel.version)
+    prov = _load_provenance(site_dir(root) / std.id / f"v{rel.version}")
     prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
     views = []
     for art in rel.artifacts:
@@ -154,20 +177,35 @@ def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
     return views
 
 
-def _overview_html(std: Standard) -> str:
+def _read_content(path: Path, log, degraded: list[str]) -> str | None:
+    """Optional prose beside a manifest. Unreadable prose must not stop a build.
+
+    These files are decoration: the page has a summary to fall back on. Letting a damaged one
+    raise would take down the render of every other standard along with it.
+    """
+    if not path.is_file():
+        return None
+    try:
+        return read_text(path)
+    except (OSError, DecodeError) as exc:
+        log(f"  [WARN] {path} could not be read and was skipped: {exc}")
+        degraded.append(str(path))
+        return None
+
+
+def _overview_html(std: Standard, log, degraded: list[str]) -> str:
     cd = std.content_dir
-    src = None
-    if cd and (cd / "overview.md").is_file():
-        src = (cd / "overview.md").read_text(encoding="utf-8")
+    src = _read_content(cd / "overview.md", log, degraded) if cd else None
     if not src:
         return f"<p>{std.summary}</p>"
     return md.markdown(src, extensions=["extra", "sane_lists", "toc"])
 
 
-def _release_notes_html(std: Standard, rel: Release) -> str | None:
+def _release_notes_html(std: Standard, rel: Release, log, degraded: list[str]) -> str | None:
     cd = std.content_dir
-    if cd and (cd / f"{rel.version}.md").is_file():
-        return md.markdown((cd / f"{rel.version}.md").read_text(encoding="utf-8"), extensions=["extra"])
+    src = _read_content(cd / f"{rel.version}.md", log, degraded) if cd else None
+    if src:
+        return md.markdown(src, extensions=["extra"])
     if rel.notes:
         return md.markdown(rel.notes, extensions=["extra"])
     return None
@@ -190,10 +228,34 @@ def _copy_assets(site: Path) -> None:
             atomic_write(assets_dir / entry.name, entry.read_bytes())
 
 
-def render_site(standards: list[Standard], root: Path, log=print) -> None:
+def render_site(standards: list[Standard], root: Path, log=print) -> int:
+    # Guarded here as well as at the CLI boundary, because this is the call that actually
+    # replaces the served registry and the nginx routes with whatever it was handed.
+    if not standards:
+        raise ManifestError("refusing to render an empty registry: it would unpublish every URL")
+
+    # Counted, not merely logged. A page quietly losing its overview and falling back to a
+    # one-line summary is the same silence the sync's repair counters exist to end.
+    degraded: list[str] = []
+
+    # The memo below is per build, not per process: the sync immediately before this one has
+    # just rewritten the records this reads.
+    _load_provenance.cache_clear()
+
     env = _env()
     site = site_dir(root)
     site.mkdir(parents=True, exist_ok=True)
+
+    # The render is the last step of every cycle and the only one that looks at the whole
+    # document root, so the sweep for temp files stranded by a kill belongs here. The sync
+    # reaps only the release directories of plans it finished, which covers neither the pages
+    # written below nor a standard that failed before its commit phase. Safe because a cycle
+    # is one process doing one thing at a time; two concurrent cairn runs over one document
+    # root would have larger problems than this.
+    strays = reap_temp_tree(site)
+    if strays:
+        log(f"  [tidy] removed {strays} stranded temp file(s) under {site}")
+
     _copy_assets(site)
 
     # Root registry index
@@ -208,7 +270,7 @@ def render_site(standards: list[Standard], root: Path, log=print) -> None:
                 {
                     "release": rel,
                     "artifacts": _artifact_views(std, rel, root),
-                    "notes_html": _release_notes_html(std, rel),
+                    "notes_html": _release_notes_html(std, rel, log, degraded),
                 }
             )
 
@@ -216,7 +278,7 @@ def render_site(standards: list[Standard], root: Path, log=print) -> None:
         _write(
             site / std.id / "index.html",
             env.get_template("standard.html").render(
-                std=std, overview_html=_overview_html(std), release_ctx=release_ctx
+                std=std, overview_html=_overview_html(std, log, degraded), release_ctx=release_ctx
             ),
         )
         log(f"  [page] /{std.id}")
@@ -242,7 +304,7 @@ def render_site(standards: list[Standard], root: Path, log=print) -> None:
         for ctx in release_ctx:
             rel = ctx["release"]
             _write(
-                site / std.id / f"v{rel.version}" / "index.html",
+                site / std.id / f"v{rel.version}" / RELEASE_PAGE_NAME,
                 env.get_template("release.html").render(
                     std=std, rel=rel, artifacts=ctx["artifacts"], notes_html=ctx["notes_html"]
                 ),
@@ -260,10 +322,12 @@ def render_site(standards: list[Standard], root: Path, log=print) -> None:
     routes = write_routes(standards, root)
     log(f"  [conf] {routes}")
 
+    return len(degraded)
+
 
 def _render_catalog(standards: list[Standard], root: Path) -> str:
     def artifact_json(std, rel):
-        prov = _load_provenance(root, std.id, rel.version)
+        prov = _load_provenance(site_dir(root) / std.id / f"v{rel.version}")
         prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
         out = []
         for art in rel.artifacts:
@@ -308,7 +372,7 @@ def _render_catalog(standards: list[Standard], root: Path) -> str:
                 "releases": [
                     {
                         "version": rel.version,
-                        "status": rel.status,
+                        "status": rel.label,
                         "released": rel.released,
                         "url": f"{BASE_URL}/{std.id}/v{rel.version}",
                         "artifacts": artifact_json(std, rel),

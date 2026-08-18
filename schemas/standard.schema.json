@@ -78,11 +78,30 @@
     "release": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "status", "artifacts"],
+      "required": ["version", "lifecycle", "artifacts"],
+      "if": { "properties": { "lifecycle": { "const": "published" } }, "required": ["lifecycle"] },
+      "then": {
+        "required": ["ref"],
+        "$comment": "A published release pins its own ref so it can be rebuilt from the manifest alone."
+      },
       "properties": {
         "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "Semantic version served at /<id>/vX.Y.Z/." },
-        "ref": { "type": "string", "description": "Git ref for this release; overrides source.ref." },
-        "status": { "type": "string", "enum": ["stable", "beta", "alpha", "draft", "deprecated", "withdrawn"] },
+        "ref": { "type": "string", "description": "Git ref for this release; overrides source.ref. Required once lifecycle is 'published', and it should be a tag or commit SHA rather than a branch; cairn cannot verify which it is, so pinning a branch silently gives up rebuildability." },
+        "lifecycle": {
+          "type": "string",
+          "enum": ["draft", "published"],
+          "description": "Whether the bytes may still change. 'draft' is re-fetched and overwritten every sync; 'published' is write-once forever. Only ever moves draft -> published; the reverse is refused by the PR gate."
+        },
+        "served": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the URLs answer 200 or 410. Freely toggled in both directions; withdrawing a release does not un-publish it."
+        },
+        "maturity": {
+          "type": "string",
+          "enum": ["alpha", "beta", "stable", "deprecated"],
+          "description": "Display label only. Has no effect on freezing or serving."
+        },
         "released": { "type": "string", "format": "date" },
         "notes": { "type": "string" },
         "artifacts": {
@@ -97,7 +116,7 @@
       "additionalProperties": false,
       "required": ["name", "role", "from"],
       "properties": {
-        "name": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$", "description": "Filename to serve as, under the version folder." },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$", "description": "Filename to serve as, under the version folder. Must not begin with a dot, must not be a name cairn generates, and is checked again by cairn with a stricter anchor. JSON Schema patterns are ECMA-262, where \\A and \\Z are literal letters rather than anchors." },
         "role": {
           "type": "string",
           "enum": ["schema", "relaxng", "nvdl", "schematron", "taglibrary-html", "taglibrary-pdf", "documentation", "license", "other"],

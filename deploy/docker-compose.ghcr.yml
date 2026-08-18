@@ -3,15 +3,17 @@
 # means the running stack is whatever was last built on that machine rather than a known
 # release.
 #
-# Usage, pinned to a release (preferred):
-#   CAIRN_TAG=0.2.0 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
-#   CAIRN_TAG=0.2.0 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+# Usage:
+#   cp .env.example .env          # once per host; set CAIRN_TAG to the release you want
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
 #
-# CAIRN_TAG accepts exactly what the publish workflow produces:
-#   0.2.0              a release, from a v0.2.0 git tag
-#   0.2                the minor line, moves with each patch release
-#   sha-<40 hex>       a specific commit; note the `sha-` prefix, a bare sha is not a tag
-#   latest             newest build of the default branch only, never set by a release tag
+# Set it in .env rather than on the command line. CAIRN_TAG is required rather than
+# defaulted, which means it is required by every subcommand, including `down`, `stop`, `logs`
+# and `ps` - and needing to remember the tag before you can stop a running stack is a bad
+# thing to discover during an incident. See .env.example for what the tag may be, and for
+# why there is no default.
+#
 # Pinning a release is the safer habit for a service whose whole promise is that published
 # bytes do not move.
 #
@@ -21,8 +23,8 @@
 services:
   web:
     build: !reset null
-    image: ghcr.io/openpreserve/cairn-standards/web:${CAIRN_TAG:-latest}
+    image: ghcr.io/openpreserve/cairn-standards/web:${CAIRN_TAG:?set CAIRN_TAG to a release version (e.g. 0.2.0), or to latest for main}
 
   syncer:
     build: !reset null
-    image: ghcr.io/openpreserve/cairn-standards/syncer:${CAIRN_TAG:-latest}
+    image: ghcr.io/openpreserve/cairn-standards/syncer:${CAIRN_TAG:?set CAIRN_TAG to a release version (e.g. 0.2.0), or to latest for main}

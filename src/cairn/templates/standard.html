@@ -26,7 +26,7 @@
   {% set rel = ctx.release %}
   <h3 id="v{{ rel.version }}">
     <a href="/{{ std.id }}/v{{ rel.version }}">v{{ rel.version }}</a>
-    <span class="badge {{ rel.status }}">{{ rel.status }}</span>
+    <span class="badge {{ rel.label }}">{{ rel.label }}</span>
     {% if rel.released %}<span class="note">- {{ rel.released }}</span>{% endif %}
   </h3>
   <table class="files">

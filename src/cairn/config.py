@@ -10,6 +10,22 @@ SCHEMA_RELPATH = Path("schemas") / "standard.schema.json"
 
 # Build outputs (git-ignored).
 SITE_DIRNAME = "site"                       # the nginx document root
+# The page the render writes into each release directory. It sits among write-once artifacts
+# that the sync's orphan reaper is allowed to delete, so the reaper has to know it is not one
+# of them. Named here rather than in either module, because a copy in the reaper is a copy of
+# the render's decision, and the reaper deletes files on the strength of it.
+RELEASE_PAGE_NAME = "index.html"
+# The two metadata files the sync writes into every release directory. Named here for the same
+# reason as the page above: the orphan reaper spares all three by name, and a rename that
+# missed one copy would have it delete the file instead.
+PROVENANCE_NAME = "provenance.json"
+SUMS_NAME = "SHA256SUMS"
+
+# Everything cairn itself writes into a release directory. The orphan reaper spares these, and
+# manifest validation refuses an artifact that would collide with one: the sync would write the
+# artifact and then overwrite it with its own metadata, leaving SHA256SUMS claiming a checksum
+# for a file that holds the provenance document.
+GENERATED_NAMES = frozenset({RELEASE_PAGE_NAME, PROVENANCE_NAME, SUMS_NAME})
 BUILD_DIRNAME = "build"                     # generated non-served artifacts (nginx conf, ...)
 NGINX_ROUTES_RELPATH = Path("nginx") / "cairn-routes.conf"
 

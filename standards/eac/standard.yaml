@@ -29,7 +29,7 @@ major_lines:
 
 releases:
   - version: 3.0.0
-    status: draft
+    lifecycle: draft
     artifacts:
       - name: eac.xsd
         role: schema

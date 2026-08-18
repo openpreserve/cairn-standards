@@ -13,9 +13,18 @@ RUN pip install --no-cache-dir .
 COPY schemas ./schemas
 COPY standards ./standards
 # GITHUB_TOKEN can be passed as a build secret to lift GitHub API rate limits.
+#
+# `cairn all` rather than `cairn sync && cairn build`: the && chain stopped at the first
+# non-zero, so a sync failure hid whether the render would also have failed, and it duplicated
+# a composition cli.cmd_all already implements and tests.
+#
+# Any non-zero fails this RUN and discards the layer holding the seed snapshot. That is
+# deliberate here and only here: this stage produces a release artifact, so an image missing a
+# standard should not be published at all. The syncer loop makes the opposite call on the same
+# codes, and does not use `cairn all` because it must tolerate build rc 3.
 RUN --mount=type=secret,id=github_token,required=false \
-    sh -c 'export GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
-           cairn validate && cairn sync && cairn build'
+    sh -c 'umask 022; export GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
+           cairn validate && cairn all'
 
 # ---------- runtime stage: a small nginx that seeds volumes and self-reloads ----------
 FROM nginx:1.27-alpine AS runtime

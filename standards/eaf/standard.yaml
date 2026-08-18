@@ -31,9 +31,10 @@ major_lines:
 
 releases:
   # NOTE: `draft` = tracks the release_2026_07 branch and is re-synced each run.
-  # At the official release (end of July 2026) set status: stable and pin `ref:` to the tag.
+  # At the official release (end of July 2026) set lifecycle: published, maturity: stable, and
+  # pin `ref:` to the tag (a published release must pin its own ref).
   - version: 1.0.0
-    status: draft
+    lifecycle: draft
     artifacts:
       - name: eaf.xsd
         role: schema
