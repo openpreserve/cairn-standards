@@ -208,7 +208,14 @@ def cmd_sync(args) -> int:
                 file=sys.stderr,
             )
         return EXIT_NOTHING_SUCCEEDED if stats.nothing_succeeded else EXIT_STANDARD_FAILED
-    if stats.restored or stats.recovered or stats.unreadable or stats.published:
+    # stats.published is deliberately absent. A publication is what the manifest asked for,
+    # reviewed on a pull request, so doing it is not a condition needing attention - and the
+    # image build stage runs `cairn validate && cairn all` against an empty /work/site, where
+    # every published release publishes. Raising the exit code there meant that the moment any
+    # standard went to `lifecycle: published`, no image could be built again, on every build
+    # rather than only the promotion one. It is still reported: the marker reaches the log,
+    # which is where an operator who promoted nothing finds out a release directory was lost.
+    if stats.restored or stats.recovered or stats.unreadable:
         return EXIT_ATTENTION
     return EXIT_OK
 

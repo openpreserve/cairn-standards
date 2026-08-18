@@ -64,16 +64,22 @@ def _sync(root: Path, *args, upstream: bytes = UPSTREAM) -> int:
 
 
 def _publish(root: Path, **kwargs) -> None:
-    """The first sync of a published release is its publication, and publications are reported.
+    """The first sync of a published release is its publication. It is reported and exits 0.
 
-    A release that has never written to this volume has no record and no bytes to contradict,
-    so the write-once guards do not apply to that one cycle. That is also indistinguishable
-    from a release whose directory was deleted, which is the case this reporting exists for:
-    the previous model treated "no record" as a first run and silently adopted whatever
-    upstream served under an already-published URL. Tests that want the steady state publish
-    through here first.
+    Reported, because a release that has never written to this volume has no record and no
+    bytes to contradict, so the write-once guards do not apply to that one cycle - and that is
+    indistinguishable from a release whose directory was deleted.
+
+    Exit 0, because the manifest asked for it. Raising the exit code broke the image build
+    stage, which runs `cairn validate && cairn all` against an empty /work/site where every
+    published release publishes: the moment any standard went to `lifecycle: published`, no
+    image could be built again.
     """
-    assert _sync(root, **kwargs) == EXIT_ATTENTION, "the publication cycle must report itself"
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = _sync(root, **kwargs)
+    assert rc == EXIT_OK, f"a publication must not raise the exit code (got {rc})"
+    assert "VERSION PUBLISHED" in err.getvalue(), "a publication must still be reported"
 
 
 def _served(root: Path) -> Path:
