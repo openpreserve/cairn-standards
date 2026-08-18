@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import re
 from pathlib import Path
 from unittest import mock
 
