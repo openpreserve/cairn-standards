@@ -10,6 +10,11 @@ SCHEMA_RELPATH = Path("schemas") / "standard.schema.json"
 
 # Build outputs (git-ignored).
 SITE_DIRNAME = "site"                       # the nginx document root
+# The page the render writes into each release directory. It sits among write-once artifacts
+# that the sync's orphan reaper is allowed to delete, so the reaper has to know it is not one
+# of them. Named here rather than in either module, because a copy in the reaper is a copy of
+# the render's decision, and the reaper deletes files on the strength of it.
+RELEASE_PAGE_NAME = "index.html"
 BUILD_DIRNAME = "build"                     # generated non-served artifacts (nginx conf, ...)
 NGINX_ROUTES_RELPATH = Path("nginx") / "cairn-routes.conf"
 

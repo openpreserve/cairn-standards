@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
+from enum import StrEnum
 from pathlib import Path
 
 import httpx
@@ -16,6 +18,16 @@ from . import __version__
 # and `os.replace` carries that mode onto the destination, so the mode is set explicitly
 # rather than inherited from the temp file's default.
 PUBLISHED_MODE = 0o644
+
+# Directories are not chmod'd here at all: the syncer sets `umask 022` before it runs (see
+# deploy/sync-loop.sh), so every directory this service creates is 0755 by construction, and a
+# directory it did not create belongs to whoever mounted it.
+#
+# The alternative was tried and withdrawn. Setting each directory's mode explicitly meant
+# walking a path and widening what it found, and that walk produced seven defects across two
+# review rounds - the worst of them chmod'ing the user's home directory, because `path.parents`
+# does not stop at anything in particular. One line in the entrypoint does the same job with no
+# traversal, no second mode constant, no per-directory counter and no marker of its own.
 
 USER_AGENT = f"cairn/{__version__} (+https://standards.openpreservation.org)"
 
@@ -44,8 +56,97 @@ def http_client() -> httpx.Client:
     return httpx.Client(headers=headers, timeout=30.0, follow_redirects=True)
 
 
+class DecodeError(ValueError):
+    """A file's bytes are not valid UTF-8.
+
+    Separate from being unable to read the file at all, because the two mean different things
+    about the volume and want different responses. Named rather than left as UnicodeDecodeError
+    because that is a ValueError, so it slips past every `except OSError` in the codebase and
+    arrives at the top level as a traceback - which took the whole registry down when it
+    happened during a render.
+    """
+
+
+def read_text(path: Path) -> str:
+    """Read *path* as UTF-8, raising DecodeError instead of UnicodeDecodeError.
+
+    Every caller has to handle both "cannot read it" and "read it, and it is not text". Only
+    the first was ever caught, in five separate places.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # No path in the message. Every caller has one and adds it; including it here put it
+        # in the operator-facing text twice, and the class name made three.
+        raise DecodeError(f"not valid UTF-8 (byte {exc.start}: {exc.reason})") from exc
+
+
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+# The manifest schema constrains artifact names to this, but provenance.json is written by
+# cairn and read back without a schema, so nothing checked it on the way in. Every name in it
+# is resolved against a release directory, and one of them is passed to unlink() by the orphan
+# reaper: a record holding "../../../something" deleted a file outside the document root and
+# the run reported success.
+# The negative lookahead is the whole point: "." and ".." match the character class, so without
+# it a record naming ".." was accepted, listed as an orphan, and reached (vdir / "..").unlink()
+# - which raises EISDIR, failing that release on every cycle with an OSError carrying no marker.
+_SAFE_ARTIFACT_NAME = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._-]+$")
+
+
+def is_provenance_record_set(data: object) -> bool:
+    """Whether *data* is a provenance document the rest of this codebase can index into.
+
+    Both readers key every record by name, so a structurally malformed document surfaces as a
+    TypeError or KeyError from deep inside a loop: the sync's plan phase, the render's page
+    loop. Two copies of this check drifted apart once already - render learned to reject valid
+    JSON of the wrong shape a release after the sync did.
+
+    The name is checked, not merely its type. Callers join it onto a release directory and one
+    of them unlinks the result, so a record is only usable if every name in it is a bare
+    filename. Rejecting it here makes a record holding a traversal name damage, which is what
+    it is, rather than an instruction.
+
+    It lives here rather than in sync because it is a pure predicate over a parsed document,
+    and importing it from sync gave the renderer a dependency on the one module in the package
+    that does network I/O, pointing the arrow from render to sync for four lines of structure.
+    """
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("artifacts"), list)
+        and all(
+            isinstance(a, dict)
+            and isinstance(a.get("name"), str)
+            and _SAFE_ARTIFACT_NAME.match(a["name"]) is not None
+            for a in data["artifacts"]
+        )
+    )
+
+
+# Temp files are created in the destination directory, which for most callers is inside the
+# public document root, so they need a name that is both recognisable for cleanup and not
+# served. nginx denies dotfiles (deploy/nginx.conf); a random mkstemp name was neither.
+TEMP_PREFIX = ".cairn-tmp-"
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Persist a rename itself, not just the bytes it points at.
+
+    Best-effort: some filesystems refuse to fsync a directory, and failing to harden a
+    rename is not a reason to fail a write that has already succeeded.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -58,33 +159,96 @@ def atomic_write(path: Path, data: bytes) -> None:
     `os.fdopen` takes ownership of the descriptor so it is closed exactly once, including
     when the write itself fails. Closing it twice by hand would raise EBADF from the second
     attempt, masking the real error and skipping the temp-file cleanup.
+
+    The data is fsynced before the rename and the directory after it. Without that, rename is
+    atomic against other readers but not against power loss: on a crash the metadata can land
+    while the blocks behind it do not, leaving a published artifact that is zero-length or
+    partly zeroed while its name and its recorded checksum both insist it is intact. That is
+    the one failure this service is least able to detect after the fact.
     """
-    fd, tmp = tempfile.mkstemp(dir=path.parent)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=TEMP_PREFIX)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.chmod(tmp, PUBLISHED_MODE)
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except Exception:
         Path(tmp).unlink(missing_ok=True)
         raise
 
 
-def ensure_published_mode(path: Path) -> bool:
+def _reap(paths) -> int:
+    """Delete each path, counting successes. Best-effort, and never raises."""
+    removed = 0
+    try:
+        candidates = list(paths)
+    except OSError:
+        return 0
+    for stray in candidates:
+        try:
+            stray.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def reap_temp_files(directory: Path) -> int:
+    """Delete leftover temp files in *directory*, returning how many were removed.
+
+    A process killed between creating a temp file and renaming it leaves the file behind.
+    Nothing else would ever remove it: the orphan reaper only considers names recorded in
+    provenance, so a stray would accumulate permanently in a directory documented as
+    write-once. Best-effort, and never a reason to fail a sync.
+    """
+    return _reap(directory.glob(f"{TEMP_PREFIX}*"))
+
+
+def reap_temp_tree(directory: Path) -> int:
+    """Same, for every directory under *directory*.
+
+    The sync only reaps release directories belonging to a plan it finished, which leaves out
+    everything the render writes (the registry index, the per-standard pages, the namespace
+    documents, the assets) and the release directories of any standard whose plan raised.
+    """
+    return _reap(directory.rglob(f"{TEMP_PREFIX}*"))
+
+
+class ModeRepair(StrEnum):
+    """Outcome of a permission repair. FAILED and UNCHANGED must not look alike."""
+
+    UNCHANGED = "unchanged"  # already readable, or not there to repair
+    REPAIRED = "repaired"    # widened to PUBLISHED_MODE
+    FAILED = "failed"        # still unreadable, and we cannot fix it
+
+
+def ensure_published_mode(path: Path) -> ModeRepair:
     """Widen *path* to PUBLISHED_MODE if it is not already readable by the web server.
 
     Frozen artifacts are never rewritten, so a file left unreadable by an earlier bug would
     stay a 403 forever. Repairing it here costs one stat per sync and needs no re-fetch.
-    Returns True when a change was made.
+
+    Failing is not a reason to fail the sync - a read-only mount or a file owned by another
+    user is out of our hands - but it must be distinguishable from success. Returning a bare
+    False for both meant a permanent 403 was reported identically to "nothing to do", so
+    nothing counted it and nothing logged it.
     """
     try:
         current = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        return ModeRepair.UNCHANGED
     except OSError:
-        return False
+        return ModeRepair.FAILED
     if current == PUBLISHED_MODE:
-        return False
-    path.chmod(PUBLISHED_MODE)
-    return True
+        return ModeRepair.UNCHANGED
+    try:
+        path.chmod(PUBLISHED_MODE)
+    except OSError:
+        return ModeRepair.FAILED
+    return ModeRepair.REPAIRED
 
 
 def media_type_for(name: str, override: str | None = None) -> str:
