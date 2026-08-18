@@ -29,6 +29,7 @@ import pytest
 from cairn import cli
 from cairn.config import find_root
 from cairn.markers import Marker
+from cairn.config import RELEASE_PAGE_NAME
 from cairn.sync import GENERATED_NAMES
 
 ROOT = find_root(Path(__file__).resolve().parent)
@@ -218,3 +219,26 @@ def test_every_exit_code_has_a_documented_row(code):
     assert re.search(rf"^\| {code} \| .+\|$", table, re.MULTILINE), (
         f"exit code {code} is returned by cairn but has no row in the exit-code table"
     )
+
+
+def test_nginx_serves_the_release_page_the_render_actually_writes():
+    """config.RELEASE_PAGE_NAME exists so the render and the sync's orphan reaper cannot
+    disagree about the filename, and its docstring names a copy elsewhere as the hazard. Two
+    copies live in deploy/nginx.conf, which is static and cannot import the constant, so the
+    comparison has to happen here.
+
+    The cache-map test above does not cover this: RELEASE_PAGE_NAME flows into GENERATED_NAMES,
+    so renaming the constant keeps that test green while `index` and `try_files` still name the
+    old file - and every release directory answers 404.
+    """
+    conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+    directives = [
+        line.strip() for line in conf.splitlines()
+        if line.strip().startswith(("index ", "try_files "))
+    ]
+    assert directives, "nginx.conf no longer resolves a directory to a page at all"
+    for directive in directives:
+        assert RELEASE_PAGE_NAME in directive, (
+            f"nginx.conf serves '{directive}', but the render writes {RELEASE_PAGE_NAME!r}. "
+            f"Every release directory would answer 404."
+        )
