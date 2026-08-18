@@ -13,9 +13,22 @@ RUN pip install --no-cache-dir .
 COPY schemas ./schemas
 COPY standards ./standards
 # GITHUB_TOKEN can be passed as a build secret to lift GitHub API rate limits.
+#
+# `cairn all` rather than `cairn sync && cairn build`, for one modest reason: the && chain
+# stopped at the first non-zero, so a sync failure meant you never learned whether the render
+# would also have failed, and it was a second copy of a composition cli.cmd_all already
+# implements and has tests for.
+#
+# It buys no isolation, and an earlier version of this comment wrongly claimed it did.
+# cmd_all returns `sync_rc or build_rc`, so any non-zero still fails this RUN and docker still
+# discards the layer holding the seed snapshot - exactly as before. That is deliberate here
+# and only here: this stage produces a release artifact rather than keeping a running service
+# current, so an image whose registry is missing a standard, or whose pages quietly lost their
+# prose, should not be published at all. The syncer loop makes the opposite call for the same
+# codes, and does not use `cairn all` precisely because it needs to tolerate build rc 3.
 RUN --mount=type=secret,id=github_token,required=false \
-    sh -c 'export GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
-           cairn validate && cairn sync && cairn build'
+    sh -c 'umask 022; export GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"; \
+           cairn validate && cairn all'
 
 # ---------- runtime stage: a small nginx that seeds volumes and self-reloads ----------
 FROM nginx:1.27-alpine AS runtime
