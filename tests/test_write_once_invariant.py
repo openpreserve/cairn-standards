@@ -274,7 +274,7 @@ FORBIDDEN = [(was, now) for was, now in itertools.product(STATES, STATES)
              if was[0] is Lifecycle.PUBLISHED and now[0] is Lifecycle.DRAFT]
 
 
-def _check_transition(was, now, upstream: str, served: Path, stats, case: str) -> None:
+def _check_transition(was, now, upstream: str, served: Path, before, stats, case: str) -> None:
     """What a manifest edit between cycles is allowed to leave behind.
 
     Phrased without reference to how the sync branches, like the first oracle - and this time
@@ -296,8 +296,29 @@ def _check_transition(was, now, upstream: str, served: Path, stats, case: str) -
     # No sequence of `served` edits can reach this, which is the whole design: it is the single
     # forbidden edge in the state machine rather than a path through a six-value enum.
     if (was, now) in FORBIDDEN:
+        if before is None:
+            # The previous era was dormant, so it wrote nothing: there is no provenance for the
+            # syncer's guard to read, and no published bytes to protect. `compare_to_baseline`
+            # still refuses the edit, and it is the layer that can, because it reads the
+            # manifest's history rather than the volume.
+            return
         assert failed, f"{case}: a published version was un-frozen and the run reported success"
         assert after == PUBLISHED, f"{case}: published bytes were overwritten in place"
+        return
+
+    # Dormant now: published and not served. Nothing is written, whatever it was before and
+    # whatever upstream is doing - including on the cycle that publishes it. Restoring service
+    # ends dormancy and that cycle fetches at the pin, so nothing is lost by not writing here.
+    if now_lifecycle is Lifecycle.PUBLISHED and not now_served:
+        assert not failed, f"{case}: a dormant release was reported as failed"
+        assert after == before, f"{case}: a dormant release was written to"
+        return
+
+    if before is None:
+        # The previous era was dormant, so nothing was ever written for this release and this
+        # cycle is its first publication: what the manifest names now is what gets published.
+        assert not failed, f"{case}: publishing a version was reported as failed"
+        assert after == upstream_bytes, f"{case}: published {str(after)[:40]} rather than the manifest's"
         return
 
     if now_lifecycle is Lifecycle.DRAFT:
@@ -341,11 +362,12 @@ def test_a_manifest_edit_between_cycles(tmp_path, was, now, upstream, verify):
         sync_all([_standard(was)], tmp_path, log=lambda *a: None)
 
     served = site_dir(tmp_path) / "demo" / "v1.0.0" / "demo.xsd"
+    before = served.read_bytes() if served.exists() else None
     upstream_bytes = PUBLISHED if upstream == "unchanged" else UPSTREAM_MOVED
     with mock.patch("cairn.sync.http_client", lambda: FakeClient(upstream_bytes)):
         stats = sync_all([_standard(now)], tmp_path, verify=verify, log=lambda *a: None)
 
-    _check_transition(was, now, upstream, served, stats,
+    _check_transition(was, now, upstream, served, before, stats,
                       f"{_name(was)} -> {_name(now)}/upstream {upstream}/verify {verify}")
 
 

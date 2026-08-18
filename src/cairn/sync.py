@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import PROVENANCE_NAME, RELEASE_PAGE_NAME, SUMS_NAME, site_dir
+from .config import GENERATED_NAMES, PROVENANCE_NAME, RELEASE_PAGE_NAME, SUMS_NAME, site_dir
 from .manifest import (
     Lifecycle,
     Artifact,
@@ -34,6 +34,7 @@ from .manifest import (
 )
 from .markers import Marker
 from .util import (
+    PUBLISHED_MODE,
     TEMP_PREFIX,
     DecodeError,
     is_provenance_record_set,
@@ -51,7 +52,6 @@ API_BASE = "https://api.github.com"
 
 # Written into a release directory by something other than the artifact loop: the render's
 # page for that release, and this module's own metadata. Never candidates for reaping.
-GENERATED_NAMES = frozenset({RELEASE_PAGE_NAME, PROVENANCE_NAME, SUMS_NAME})
 
 
 class SyncError(Exception):
@@ -650,8 +650,10 @@ def _plan_release(
 
     # A release whose whole directory was lost therefore republishes: nothing here contradicts
     # anything. That is a restoration rather than a silent adoption of drift only because the
-    # schema requires a published release to pin its own `ref`, so "what upstream serves now"
-    # and "what was published" are the same bytes by construction. It is reported either way.
+    # schema requires a published release to pin its own `ref`. That makes the two the same
+    # bytes only if the ref is a tag or a SHA, which nothing here can check - a branch name is
+    # not distinguishable from a tag name - so it is a review responsibility, and this is why
+    # the cycle is reported rather than silent.
     publishing_now = rel.ever_published and not already_published_here
 
     # The reverse. `cairn validate --baseline` refuses this on a pull request, but the syncer is
@@ -692,7 +694,14 @@ def _plan_release(
     # API call that raises when the tag is gone, which is the usual reason a release was
     # withdrawn - so a per-artifact rule still failed the standard on every cycle forever, and
     # the manifest cannot drop a published release either.
-    if rel.ever_published and not rel.served and not publishing_now:
+    #
+    # Identical to the dry run's rule, deliberately: it is read off the manifest alone, with no
+    # `publishing_now` term. Adding one defeated dormancy exactly where it mattered most - an
+    # empty document root, which is every image build and every restored volume - so the real
+    # sync fetched a withdrawn release that the CI gate had skipped. Publishing an un-served
+    # release writes nothing and loses nothing: restoring service ends dormancy, and that cycle
+    # takes the ordinary published path and fetches at the pinned ref.
+    if rel.ever_published and not rel.served:
         return ReleasePlan(rel, vdir, [], [], damaged_metadata, prior, publishing_now, dormant=True)
 
     # Checked before the artifact loop so that the precise refusal wins: a manifest that drops
@@ -854,6 +863,15 @@ def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) 
     left in place one level down.
     """
     rel = plan.release
+
+    # Before the mkdir, so that "not written to" includes not being brought into existence.
+    # Creating the directory for a withdrawn release whose volume was lost gave the render an
+    # empty release directory to fill with an index page, and left `already_published_here` -
+    # which reads exactly that - looking at state the dormant path had invented.
+    if plan.dormant:
+        _write_release_metadata(std, plan, stats, log=log)
+        return
+
     plan.vdir.mkdir(parents=True, exist_ok=True)
 
     # Clear any temp file stranded by a previous run that was killed mid-write. Done here
@@ -995,10 +1013,15 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
             # unchecked would certify bytes nobody has verified. Re-serving the release ends
             # dormancy and puts it back on the ordinary published path, which restores or
             # refuses; until then this is reported rather than repaired.
-            stats.unreadable += 1
+            # Not stats.unreadable: that counter is the CLI's source for PERMISSION REPAIR
+            # FAILED, whose runbook entry sends an operator to check volume ownership for a
+            # URL answering 403. No mode is involved here, nothing is unreadable, and these
+            # URLs answer 410. Counted as a damaged record instead, which is what it is.
+            stats.recovered += 1
             log(
-                f"  [WARN] {std.id} v{rel.version}: no provenance record, and the release is not "
-                f"served so it cannot be rebuilt. Set served: true to repair it."
+                f"  [WARN] {std.id} v{rel.version}: no provenance record, and the release is not\n"
+                f"         served, so it cannot be rebuilt without fetching. Set served: true to\n"
+                f"         let the next cycle restore it."
             )
             return
         if prior.get("served") != rel.served:
@@ -1049,11 +1072,18 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
         and on_disk_sums == expected_sums_by_name
     ):
         for meta_path in (prov_path, sums_path):
-            # Counted, not just logged. A warning nothing tallies produces no marker and no
-            # exit code, which is the same silence the ModeRepair outcomes exist to end.
-            if ensure_published_mode(meta_path) is ModeRepair.FAILED:
+            # All three outcomes, not just the failure. Counting FAILED alone let a successful
+            # repair on this path move no counter and log nothing, while the identical repair on
+            # an artifact was counted and logged - so the volume was modified silently and
+            # "N permission(s) repaired" under-reported. Making REPAIRED and UNCHANGED
+            # indistinguishable is the asymmetry the three-way outcome was introduced to end.
+            outcome = ensure_published_mode(meta_path)
+            if outcome is ModeRepair.FAILED:
                 stats.unreadable += 1
                 log(f"  [WARN] {std.id} v{rel.version}/{meta_path.name} will answer 403; mode not repairable")
+            elif outcome is ModeRepair.REPAIRED:
+                stats.repaired += 1
+                log(f"  [mode] {std.id} v{rel.version}/{meta_path.name} -> {PUBLISHED_MODE:04o}")
         return
 
     # SHA256SUMS first, provenance last. provenance.json is what the next run compares

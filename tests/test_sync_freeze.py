@@ -1566,8 +1566,9 @@ def test_an_unserved_release_is_not_probed_at_all(tmp_path):
     which is how the previous model had a withdrawn release adopt upstream drift and then
     certify it on the way back to service.
     """
-    sync_standard(_std(lifecycle=Lifecycle.PUBLISHED, served=False), tmp_path,
-                  _FakeClient(b"OLD"), log=lambda *a: None)
+    # Seeded directly rather than by syncing: a dormant release writes nothing, so a first
+    # sync would leave no bytes for the second to leave alone.
+    _seed(tmp_path, b"OLD", served=False)
 
     stats = sync_standard(
         _std(lifecycle=Lifecycle.PUBLISHED, served=False), tmp_path,
@@ -1701,3 +1702,28 @@ def test_the_dry_run_does_not_probe_a_release_it_would_not_sync(tmp_path):
 
     assert not stats.failures, stats.failures
     assert stats.unreachable == 0
+
+
+def test_dormancy_does_not_depend_on_what_is_already_on_the_volume(tmp_path):
+    """The planner and the dry run must answer this identically, from the manifest alone.
+
+    A `publishing_now` term in one of them meant an empty document root - every image build,
+    every restored volume, every first deploy - defeated dormancy in the real sync while the CI
+    gate still skipped the release. The gate was green and the deployment fetched a withdrawn
+    release whose upstream is typically the reason it was withdrawn.
+    """
+    class RefusesEverything:
+        def get(self, *a, **kw):
+            raise AssertionError("a dormant release reached the network")
+        head = get
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    # No _seed: the document root is empty, which is the state the image build starts from.
+    with mock.patch("cairn.sync.http_client", RefusesEverything):
+        planned = sync_all([_std(served=False)], tmp_path, log=lambda *a: None)
+        probed = sync_all([_std(served=False)], tmp_path, dry_run=True, log=lambda *a: None)
+
+    assert not planned.failures and not probed.failures
+    assert planned.fetched == 0, "the sync fetched a release the gate does not check"
+    assert not (site_dir(tmp_path) / "demo" / "v1.0.0").exists(), "a dormant release was written"

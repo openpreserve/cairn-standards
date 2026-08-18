@@ -12,8 +12,8 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from . import BASE_URL
-from .config import schema_path, standards_dir
-from .util import DecodeError, media_type_for, read_text, semver_key
+from .config import GENERATED_NAMES, schema_path, standards_dir
+from .util import _SAFE_ARTIFACT_NAME, DecodeError, media_type_for, read_text, semver_key
 
 
 class ManifestError(Exception):
@@ -298,6 +298,24 @@ def _semantic_checks(std: Standard, manifest_file: Path) -> list[str]:
         if dupe_names:
             errors.append(f"release {rel.version}: duplicate artifact names: {', '.join(sorted(dupe_names))}")
         for art in rel.artifacts:
+            # Checked here as well as in the schema. The schema's pattern has to be ECMA-262 so
+            # that editors and other validators agree with us, and there `$` also matches before
+            # a trailing newline; this anchor does not. The name is joined onto the release
+            # directory and handed to atomic_write() and unlink().
+            if not _SAFE_ARTIFACT_NAME.match(art.name):
+                errors.append(
+                    f"release {rel.version}: artifact name {art.name!r} is not a bare filename"
+                )
+            # A collision is not merely confusing: the sync writes the artifact and then
+            # overwrites that same path with its own metadata, so SHA256SUMS records a checksum
+            # for a file holding the provenance document and `sha256sum -c` fails forever. On a
+            # published release the restore then leaves non-JSON in provenance.json, which the
+            # next cycle refuses as unreadable.
+            if art.name in GENERATED_NAMES:
+                errors.append(
+                    f"release {rel.version}: artifact name {art.name!r} is a file cairn generates "
+                    f"({', '.join(sorted(GENERATED_NAMES))}); it would be overwritten by its own metadata"
+                )
             required = _LOCATOR_REQUIREMENTS.get(art.from_, ())
             for field_name in required:
                 if not getattr(art, field_name):
@@ -416,6 +434,20 @@ def compare_to_baseline(current: list[Standard], baseline: list[Standard]) -> li
                     f"{std.id} v{old_rel.version}: lifecycle went from 'published' back to "
                     f"'{new_rel.lifecycle}'. That un-freezes a published version and lets later "
                     f"syncs overwrite it in place. To stop serving it, set served: false instead."
+                )
+
+            # Adding to a published release changes what that version publishes, retroactively,
+            # exactly as removing does. It also has to be refused because the syncer relies on
+            # it: an artifact with no record and no file on a published release is read as one
+            # the volume lost, not one the manifest gained, and without this gate that edit
+            # merged green and then failed the standard every cycle with UNVERIFIABLE PUBLISHED
+            # FILE, telling the operator to restore a file that had never existed.
+            added = sorted({a.name for a in new_rel.artifacts} - {a.name for a in old_rel.artifacts})
+            if added:
+                errors.append(
+                    f"{std.id} v{old_rel.version}: artifact(s) added to a published release: "
+                    f"{', '.join(added)}. What a version publishes is fixed once it is published; "
+                    f"publish the addition as a new version."
                 )
 
             lost = sorted({a.name for a in old_rel.artifacts} - {a.name for a in new_rel.artifacts})

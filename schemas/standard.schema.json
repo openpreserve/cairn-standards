@@ -86,7 +86,7 @@
       },
       "properties": {
         "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "Semantic version served at /<id>/vX.Y.Z/." },
-        "ref": { "type": "string", "description": "Git ref for this release; overrides source.ref. Required once lifecycle is 'published', and it must be a tag or commit SHA rather than a branch." },
+        "ref": { "type": "string", "description": "Git ref for this release; overrides source.ref. Required once lifecycle is 'published', and it should be a tag or commit SHA rather than a branch; cairn cannot verify which it is, so pinning a branch silently gives up rebuildability." },
         "lifecycle": {
           "type": "string",
           "enum": ["draft", "published"],
@@ -116,7 +116,7 @@
       "additionalProperties": false,
       "required": ["name", "role", "from"],
       "properties": {
-        "name": { "type": "string", "pattern": "\\A[A-Za-z0-9_-][A-Za-z0-9._-]*\\Z", "description": "Filename to serve as, under the version folder. Must not begin with a dot: nginx answers 404 for dotted path segments, and '.cairn-tmp-*' is what the stranded-temp reaper deletes." },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$", "description": "Filename to serve as, under the version folder. Must not begin with a dot, must not be a name cairn generates, and is checked again by cairn with a stricter anchor. JSON Schema patterns are ECMA-262, where \\A and \\Z are literal letters rather than anchors." },
         "role": {
           "type": "string",
           "enum": ["schema", "relaxng", "nvdl", "schematron", "taglibrary-html", "taglibrary-pdf", "documentation", "license", "other"],

@@ -93,9 +93,13 @@ Gotchas:
 - **`maturity` is a label and nothing else.** Under the old enum `status: beta` was frozen and
   served, identical to `stable` in every behavioural respect, so an author writing it to mean
   "still moving" got a release the syncer refused to update. Freezing is `lifecycle` now.
-- **A published release must pin its own `ref`.** The schema requires it, and it must be a tag
-  or commit SHA rather than a branch. That is what makes a published release rebuildable from
-  the manifest alone if its directory is ever lost.
+- **A published release must pin its own `ref`, and it should be a tag or commit SHA.** The
+  schema requires the field; it cannot check what the value points at, because a tag and a
+  branch are not distinguishable from the string. Pinning a tag is what makes a published
+  release rebuildable from the manifest alone if its directory is ever lost. Pin a branch and
+  that property is gone: a lost or restored volume republishes branch-tip bytes under a
+  write-once URL and records them as what was published, reporting only `VERSION PUBLISHED`.
+  Nothing in cairn can catch that, so it is on review.
 - **Withdrawn history is not deleted.** An un-served release stays in the manifest and in the
   listings, and its URLs return `410 Gone` (a deliberate "this existed and is gone" signal),
   not `404`.
@@ -335,8 +339,12 @@ where they should be caught; reaching the syncer means the change was merged any
 
 - `VERSION PUBLISHED` - a release became frozen on this cycle, so the write-once checks did
   not apply to it: on the cycle that publishes a version, the manifest is not contradicting a
-  promise, it is making one. Expected exactly once per version, when you promote a draft, and
-  the run exits 3 so it is visible.
+  promise, it is making one. Expected exactly once per version, when you promote a draft.
+
+  The run exits **0**. `cairn all` runs in the image build stage against an empty document
+  root, where every published release publishes, so counting a publication as attention meant
+  no image could be built once anything was published. Alert on the marker in the log, not on
+  the exit code.
 
   It is reported because nothing on the volume can prove it was intended. Whether the guards
   run is decided by the lifecycle recorded in `provenance.json`, which lives on the volume those

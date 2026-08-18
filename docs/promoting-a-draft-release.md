@@ -100,7 +100,7 @@ write-once guards apply.
 You do not need to clear the replica by hand, and you should not: on a deployment the volume is
 the published record, and `rm -rf` on a release directory is indistinguishable from losing it.
 
-The publication is reported. `cairn sync` exits 3 and logs `VERSION PUBLISHED`, because that is
+The publication is reported. `cairn sync` logs `VERSION PUBLISHED` and exits 0, because that is
 the one cycle on which the write-once checks do not apply. Expect it when you promote. If you
 see it when you promoted nothing, a release directory was lost and has just been rebuilt from
 its pinned ref, which is worth looking into.

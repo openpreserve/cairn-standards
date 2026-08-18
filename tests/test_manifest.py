@@ -268,3 +268,37 @@ def test_a_schema_that_is_not_utf8_is_a_named_error(tmp_path):
 
     with pytest.raises(ManifestError, match="manifest schema"):
         load_standard(d, root=tmp_path)
+
+
+def test_baseline_rejects_adding_an_artifact_to_a_published_release(tmp_path):
+    """What a version publishes is fixed once it is published, in both directions.
+
+    The syncer depends on this gate: an artifact with no record and no file on a published
+    release is read as one the volume lost, not one the manifest gained. Without the gate the
+    edit merged green and then failed that standard on every cycle with UNVERIFIABLE PUBLISHED
+    FILE, telling the operator to restore a file that had never existed.
+    """
+    before = load_all(_workspace(tmp_path, "before_add", PUBLISHED))
+    grown = PUBLISHED.replace(
+        "      - { name: demo.sch, role: schematron, from: repo, path: demo.sch }",
+        "      - { name: demo.sch, role: schematron, from: repo, path: demo.sch }\n"
+        "      - { name: extra.txt, role: documentation, from: repo, path: extra.txt }",
+    )
+    after = load_all(_workspace(tmp_path, "after_add", grown))
+
+    errors = compare_to_baseline(after, before)
+
+    assert len(errors) == 1, errors
+    assert "extra.txt" in errors[0] and "added to a published release" in errors[0]
+
+
+def test_an_artifact_may_not_be_named_after_a_file_cairn_generates(tmp_path):
+    """The sync would write the artifact and then overwrite that same path with its own
+    metadata, so SHA256SUMS records a checksum for a file holding the provenance document and
+    `sha256sum -c` fails permanently. On a published release the restore then leaves non-JSON
+    in provenance.json, which the next cycle refuses as unreadable."""
+    for name in ("provenance.json", "SHA256SUMS", "index.html"):
+        body = VALID.replace("name: demo.xsd", f"name: {name}")
+        d = _write_manifest(tmp_path / name, body)
+        with pytest.raises(ManifestError, match="cairn generates"):
+            load_standard(d, root=tmp_path / name)

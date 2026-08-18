@@ -30,7 +30,7 @@ from cairn import cli
 from cairn.config import find_root
 from cairn.markers import Marker
 from cairn.config import RELEASE_PAGE_NAME
-from cairn.sync import GENERATED_NAMES
+from cairn.config import GENERATED_NAMES
 
 ROOT = find_root(Path(__file__).resolve().parent)
 SOURCES = sorted((ROOT / "src" / "cairn").glob("*.py"))
@@ -191,7 +191,7 @@ def test_the_cache_map_knows_every_generated_file_in_a_release_directory():
     A release directory holds write-once artifacts, which are immutable and should be, beside
     files the sync and the render rewrite - so the cache map names the second group to keep
     them short-lived. That list is a third copy of a decision config.RELEASE_PAGE_NAME and
-    sync.GENERATED_NAMES were introduced to hold once, and nothing compared them. Changing the
+    config.GENERATED_NAMES were introduced to hold once, and nothing compared them. Changing the
     constant - the change it exists to make safe - would drop the release page into the
     `immutable` arm one line below: a year-long, unrecallable cache on a page re-rendered
     whenever a template changes.
@@ -264,3 +264,27 @@ def test_the_docs_do_not_cite_symbols_the_code_no_longer_has():
                 assert symbol in source, (
                     f"{doc.name} sends a reader to src/cairn for `{symbol}`, which no longer exists"
                 )
+
+
+def test_the_docs_agree_with_the_exit_code_a_publication_actually_returns():
+    """Both runbook pages said a publication exits 3, which it deliberately does not: the image
+    build stage runs `cairn all` against an empty document root, where every published release
+    publishes, so that would have made the image unbuildable. An operator alerting on exit 3 to
+    catch a rebuilt release would have seen nothing."""
+    from cairn.cli import EXIT_ATTENTION
+
+    # The condition line itself, not a span: `if stats.restored` also opens the summary block
+    # further up, and anchoring there swallowed the VERSION PUBLISHED print and always matched.
+    cli = (ROOT / "src" / "cairn" / "cli.py").read_text(encoding="utf-8")
+    before_return = cli[: cli.index("return EXIT_ATTENTION")]
+    condition = [line for line in before_return.splitlines() if line.strip().startswith("if ")][-1]
+    assert "stats.published" not in condition, (
+        f"a publication now raises the exit code ({condition.strip()}); the docs and the image "
+        f"build stage both assume it does not"
+    )
+
+    for doc in ("concepts-and-gotchas.md", "promoting-a-draft-release.md"):
+        text = (ROOT / "docs" / doc).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "VERSION PUBLISHED" in line and "exit" in line:
+                assert f"exits {EXIT_ATTENTION}" not in line, f"{doc}: {line.strip()}"

@@ -19,15 +19,10 @@ from . import __version__
 # rather than inherited from the temp file's default.
 PUBLISHED_MODE = 0o644
 
-# Directories are not chmod'd here at all: the syncer sets `umask 022` before it runs (see
-# deploy/sync-loop.sh), so every directory this service creates is 0755 by construction, and a
-# directory it did not create belongs to whoever mounted it.
-#
-# The alternative was tried and withdrawn. Setting each directory's mode explicitly meant
-# walking a path and widening what it found, and that walk produced seven defects across two
-# review rounds - the worst of them chmod'ing the user's home directory, because `path.parents`
-# does not stop at anything in particular. One line in the entrypoint does the same job with no
-# traversal, no second mode constant, no per-directory counter and no marker of its own.
+# Files only. Directories are left to `umask 022`, set by the syncer before it runs (see
+# deploy/sync-loop.sh), so every directory this service creates is 0755 by construction.
+# Setting them explicitly here instead means walking a path and widening what it finds, and
+# `path.parents` does not stop at anything in particular.
 
 USER_AGENT = f"cairn/{__version__} (+https://standards.openpreservation.org)"
 
