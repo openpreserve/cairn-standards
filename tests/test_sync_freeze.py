@@ -1654,3 +1654,50 @@ def test_a_run_survives_stdout_dying_while_it_reports_a_failure(tmp_path):
         f"a run that established nothing reported otherwise: "
         f"attempted={stats.releases_attempted} failed={stats.releases_failed}"
     )
+
+
+def test_a_dormant_release_is_not_resolved_probed_or_fetched(tmp_path):
+    """Dormancy is a property of the release, so it has to hold before anything reaches the
+    network - not inside the per-artifact decision, which runs after resolve().
+
+    resolve() is not free: a `release-asset` artifact resolves through a GitHub API call that
+    raises when the tag is gone, and a retired tag is the usual reason a release was withdrawn.
+    Deciding dormancy per artifact therefore still failed the standard on every cycle forever,
+    and the manifest cannot drop a published release either.
+    """
+    _seed(tmp_path, b"PUBLISHED", served=False)
+
+    class RefusesEverything:
+        def get(self, *a, **kw):
+            raise AssertionError("a dormant release reached the network")
+        head = get
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    std = _std(served=False, artifacts=[
+        Artifact(name="demo.xsd", role="schema", from_="release-asset",
+                 asset="demo.xsd", release_tag="v1.0.0"),
+    ])
+    with mock.patch("cairn.sync.http_client", RefusesEverything):
+        stats = sync_all([std], tmp_path, verify=True, log=lambda *a: None)
+
+    assert not stats.failures, stats.failures
+    assert stats.fetched == 0 and stats.planned == 0
+
+
+def test_the_dry_run_does_not_probe_a_release_it_would_not_sync(tmp_path):
+    """The gate must not reject what the real thing accepts. A release withdrawn because its
+    upstream was retired probes UNREACHABLE, so this failed every pull request from then on,
+    with no manifest edit able to fix it."""
+    class Gone:
+        def get(self, *a, **kw):
+            raise AssertionError("the dry run probed a release that is not served")
+        head = get
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    with mock.patch("cairn.sync.http_client", Gone):
+        stats = sync_all([_std(served=False)], tmp_path, dry_run=True, log=lambda *a: None)
+
+    assert not stats.failures, stats.failures
+    assert stats.unreachable == 0

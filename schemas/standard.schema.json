@@ -116,7 +116,7 @@
       "additionalProperties": false,
       "required": ["name", "role", "from"],
       "properties": {
-        "name": { "type": "string", "pattern": "\\A(?!\\.{1,2}\\Z)[A-Za-z0-9._-]+\\Z", "description": "Filename to serve as, under the version folder. Bare '.' and '..' are excluded: they resolve to a directory rather than a file." },
+        "name": { "type": "string", "pattern": "\\A[A-Za-z0-9_-][A-Za-z0-9._-]*\\Z", "description": "Filename to serve as, under the version folder. Must not begin with a dot: nginx answers 404 for dotted path segments, and '.cairn-tmp-*' is what the stranded-temp reaper deletes." },
         "role": {
           "type": "string",
           "enum": ["schema", "relaxng", "nvdl", "schematron", "taglibrary-html", "taglibrary-pdf", "documentation", "license", "other"],

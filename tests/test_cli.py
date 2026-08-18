@@ -21,6 +21,7 @@ from unittest import mock
 
 import pytest
 
+import cairn.cli as cli_module
 import cairn.sync as sync_module
 from fakes import MANIFEST, FakeClient, workspace
 from cairn.cli import (
@@ -489,3 +490,24 @@ def test_a_failed_build_outranks_the_sync_result(tmp_path):
     with mock.patch.object(sync_module, "http_client", lambda: FakeClient(UPSTREAM)), \
          mock.patch("cairn.render.write_routes", side_effect=OSError(28, "No space left on device")):
         assert main(["all", "--root", str(root), "--verify"]) == EXIT_INCOMPLETE
+
+
+def test_cairn_all_parses_each_manifest_once(tmp_path):
+    """cmd_sync and cmd_build each loaded and JSON-Schema-validated every manifest for
+    themselves, so a syncer cycle did the whole job twice. The cost is the smaller half: if the
+    repo were pulled between the two, the render would describe a different registry from the
+    one that had just been replicated."""
+    root = _workspace(tmp_path, "ws")
+    loads = []
+    real_load = cli_module._load
+
+    def counting_load(*a, **kw):
+        loads.append(a[0])
+        return real_load(*a, **kw)
+
+    with mock.patch.object(cli_module, "_load", counting_load):
+        with mock.patch.object(sync_module, "http_client", lambda: FakeClient(UPSTREAM)):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                main(["all", "--root", str(root)])
+
+    assert len(loads) == 1, f"the manifests were loaded {len(loads)} times in one cycle"

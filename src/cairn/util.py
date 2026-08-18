@@ -93,10 +93,16 @@ def sha256_hex(data: bytes) -> str:
 # The negative lookahead is the whole point: "." and ".." match the character class, so without
 # it a record naming ".." was accepted, listed as an orphan, and reached (vdir / "..").unlink()
 # - which raises EISDIR, failing that release on every cycle with an OSError carrying no marker.
-# `\Z`, not `$`: `$` also matches before a trailing newline, so "demo.xsd\n" passed a
-# check whose whole job is to insist on a bare filename - and that name is joined onto
-# the release directory and handed to unlink() and atomic_write().
-_SAFE_ARTIFACT_NAME = re.compile(r"\A(?!\.{1,2}\Z)[A-Za-z0-9._-]+\Z")
+# `\Z`, not `$`: `$` also matches before a trailing newline, so "demo.xsd\n" passed a check
+# whose whole job is to insist on a bare filename - and that name is joined onto the release
+# directory and handed to unlink() and atomic_write().
+#
+# No leading dot, which rules out more than `.` and `..`. `.cairn-tmp-*` is what the stranded
+# temp-file reaper globs for, so an artifact named that way was published, recorded, and then
+# deleted by the tidy step with nothing to rewrite it. And deploy/nginx.conf answers 404 for
+# any path segment starting with a dot, so every such artifact would be recorded as published
+# under a URL that can never resolve.
+_SAFE_ARTIFACT_NAME = re.compile(r"\A[A-Za-z0-9_-][A-Za-z0-9._-]*\Z")
 
 
 def is_provenance_record_set(data: object) -> bool:

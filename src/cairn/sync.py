@@ -125,7 +125,15 @@ def resolve(std: Standard, rel: Release, art: Artifact, client: httpx.Client) ->
         if not tag:
             raise SyncError(f"{std.id} {rel.version} {art.name}: release-asset needs a release_tag")
         api = f"{API_BASE}/repos/{repo}/releases/tags/{tag}"
-        resp = client.get(api)
+        # Through the same retry as the fetch and the probe. A fork's pull request calls this
+        # unauthenticated, so 429 is the expected fault, and it is the first request made -
+        # so without this the retry added for exactly that case never got to see it.
+        try:
+            resp = _with_retry(lambda: client.get(api))
+        except httpx.HTTPError as exc:
+            raise SyncError(
+                f"{std.id} {rel.version} {art.name}: cannot read release {tag} [{_describe(exc)}]"
+            ) from exc
         if resp.status_code != 200:
             raise SyncError(f"{std.id} {rel.version} {art.name}: cannot read release {tag} ({resp.status_code})")
         try:
@@ -375,7 +383,6 @@ class Verdict(StrEnum):
     """
 
     FETCH = "fetch"                      # not enough evidence yet; get the bytes and ask again
-    SKIP_DORMANT = "skip-dormant"        # published, not served: read nothing, write nothing
     SKIP_FROZEN = "skip-frozen"          # recorded, present, and this is not a verify pass
     SKIP_CORROBORATED = "skip-corroborated"  # upstream agrees with what is already served
     VERIFY = "verify"                    # frozen, re-read and confirmed against the record
@@ -397,7 +404,6 @@ class Evidence:
     """
 
     mutable: bool          # the release may be overwritten in place
-    dormant: bool          # published but not served
     publishing: bool       # this cycle is the release's first publication
     promised: bool         # published, and not by this cycle: the guards apply
     verify: bool           # --verify: re-read what would otherwise be skipped
@@ -415,9 +421,6 @@ def _decide(e: Evidence) -> Verdict:
     Called twice: once before fetching, where `upstream_sha` is None and the answer may be
     FETCH, and once after, where it may not be.
     """
-    if e.dormant:
-        return Verdict.SKIP_DORMANT
-
     # Nothing to compare against without the bytes. A record with no checksum carries no claim
     # to trust, so it does not earn the fast path.
     frozen_fast_path = e.recorded and e.recorded_sha and e.on_disk and not e.mutable and not e.publishing
@@ -510,7 +513,10 @@ def _artifact_record(art: Artifact, resolved: Resolved, data: bytes, digest: str
     }
 
 
-def _orphan_names(vdir: Path, current_names: set[str], prior: dict | None, damaged_metadata: bool) -> list[str]:
+def _orphan_names(
+    vdir: Path, current_names: set[str], prior: dict | None, damaged_metadata: bool,
+    rebuildable: bool,
+) -> list[str]:
     """Files in a release directory that the manifest no longer declares.
 
     Normally provenance is the authority on what the sync put there, so only names it recorded
@@ -519,13 +525,15 @@ def _orphan_names(vdir: Path, current_names: set[str], prior: dict | None, damag
     A record that was rebuilt, or simply lost, carries no such list, and returning nothing
     there strands those files permanently: from the next cycle the record is intact and does
     not name them either, so no reaper can see them again. Both cases scan the directory
-    itself, holding back the names neither this module nor the manifest owns. Unreachable for a
-    published release, whose damaged record is refused before this point, so nothing here can
-    remove a file under a write-once promise.
+    itself, holding back the names neither this module nor the manifest owns.
+
+    *rebuildable* is the caller's statement that this release makes no write-once promise, and
+    it gates the scan. Without it, a published release whose record was merely lost had every
+    stray file in its directory reported as an artifact removed from the manifest.
     """
     if prior:
         return sorted({a["name"] for a in prior["artifacts"]} - current_names)
-    if not (damaged_metadata or vdir.is_dir()):
+    if not (damaged_metadata or rebuildable) or not vdir.is_dir():
         return []
     # Deliberately not caught. Swallowing it returned "no orphans", which is indistinguishable
     # from "nothing to reap": the files this function exists to remove would keep serving
@@ -678,16 +686,14 @@ def _plan_release(
             commit_cache[key] = _resolve_commit(resolved.repo, resolved.ref, client)
         return commit_cache[key]
 
-    # A published release that is not served is dormant: not fetched, compared, or written.
-    # Nothing reads these URLs, and probing them anyway fails the standard forever when the
-    # upstream tag has moved, which is the usual reason a release was withdrawn.
-    #
-    # Stated once here rather than as an `is_served` clause on each guard, and skipping rather
-    # than exempting: an exempted guard still lets the fetched bytes be written.
-    #
-    # `not publishing_now`, because publishing a version that is not served still has to write
-    # what it promises, or the draft's bytes wait to be served the moment it is restored.
-    dormant = rel.ever_published and not rel.served and not publishing_now
+    # A published release that is not served is dormant: nothing is resolved, probed, fetched,
+    # compared, written or reaped for it. Returned here rather than decided per artifact,
+    # because `resolve()` is not free - a `release-asset` artifact resolves through a GitHub
+    # API call that raises when the tag is gone, which is the usual reason a release was
+    # withdrawn - so a per-artifact rule still failed the standard on every cycle forever, and
+    # the manifest cannot drop a published release either.
+    if rel.ever_published and not rel.served and not publishing_now:
+        return ReleasePlan(rel, vdir, [], [], damaged_metadata, prior, publishing_now, dormant=True)
 
     # Checked before the artifact loop so that the precise refusal wins: a manifest that drops
     # one artifact and adds another would otherwise be refused for the replacement, which is
@@ -696,7 +702,10 @@ def _plan_release(
     # Dormant releases are not reaped: "left alone" has to mean the whole directory, or
     # un-serving a release would quietly delete artifacts it is still promising.
     current_names = {art.name for art in rel.artifacts}
-    orphans = [] if dormant else _orphan_names(vdir, current_names, prior, damaged_metadata)
+    # `not frozen_promise`: scanning the directory of a published release turns any stray
+    # file an operator left there into a FROZEN VERSION LOST AN ARTIFACT naming something
+    # that was never in the manifest, and telling them to restore an artifact entry for it.
+    orphans = _orphan_names(vdir, current_names, prior, damaged_metadata, not frozen_promise)
 
     # Deleting a file from a frozen release turns a published 200 into a 404, which breaks
     # the same promise as changing its bytes. Withdrawn releases are exempt: that status
@@ -718,17 +727,18 @@ def _plan_release(
         dest = vdir / art.name
         frozen = prior_arts.get(art.name)
 
+        source_state = _source_state(frozen or {}, art, resolved)
         evidence = Evidence(
             mutable=mutable,
-            dormant=dormant,
             publishing=publishing_now,
             promised=frozen_promise,
             verify=verify,
             recorded=frozen is not None,
             recorded_sha=(frozen or {}).get("sha256"),
-            moved=_source_state(frozen or {}, art, resolved) is SourceState.MOVED,
             # UNRECORDED is deliberately not `moved`: a record with no coordinates is not
-            # evidence of a repoint. It still has to gain them, which the caller handles.
+            # evidence of a repoint. It still has to gain them, which the caller handles below,
+            # which is why the caller keeps the full state rather than only this flag.
+            moved=source_state is SourceState.MOVED,
             on_disk=dest.exists(),
             served_sha=None,
             upstream_sha=None,
@@ -772,13 +782,6 @@ def _plan_release(
                 f"  an independent copy, then restore the file or publish a new version."
             )
 
-        if verdict is Verdict.SKIP_DORMANT:
-            # No record means nothing to carry into provenance.json. A published release cannot
-            # gain artifacts, so this is only reachable from an edit that predates that gate;
-            # leaving it unplanned keeps "dormant writes nothing" true.
-            if frozen is not None:
-                planned.append(PlannedArtifact(art.name, dest, Action.SKIP, frozen))
-            continue
         if verdict is Verdict.SKIP_FROZEN:
             planned.append(PlannedArtifact(art.name, dest, Action.SKIP, frozen))
             continue
@@ -790,7 +793,6 @@ def _plan_release(
         # this is the first cycle able to state what they are. A repoint on a published release
         # was refused above, so rebuilding cannot quietly adopt new coordinates.
         record = frozen
-        source_state = _source_state(frozen or {}, art, resolved)
         if (
             record is None
             or not record.get("sha256")
@@ -808,6 +810,10 @@ def _plan_release(
             # serves as immutable.
             planned.append(PlannedArtifact(art.name, dest, Action.SKIP, record))
         else:
+            # Always a fresh record: these are new bytes, so the checksum, size and fetch time
+            # all change. Reusing `record` here kept the previous checksum for a draft whose
+            # bytes had moved without its coordinates moving, so provenance described the file
+            # it had just replaced.
             planned.append(
                 PlannedArtifact(
                     art.name, dest, Action.WRITE,
@@ -819,11 +825,13 @@ def _plan_release(
     # leave the release half written. No path above can produce a record without a checksum
     # today, so this is a backstop, kept honest by a test that forces the condition.
     #
-    # Skipped entries are excluded: a dormant release carries its prior record forward verbatim
-    # and writes no metadata, so a checksum-less record has nothing here to protect.
-    missing = [
-        p.name for p in planned if p.action is not Action.SKIP and not p.record.get("sha256")
-    ]
+    # Every planned record, skips included. Excluding them was justified by dormant plans
+    # carrying checksum-less records forward, but a dormant release now returns before this
+    # point and writes no metadata at all, so the exclusion removed the only coverage it had:
+    # expected_sums indexes r["sha256"] over every record, so a checksum-less skip would raise
+    # KeyError from inside the metadata writer, after the commit phase had already written the
+    # artifacts and deleted the orphans.
+    missing = [p.name for p in planned if not p.record.get("sha256")]
     if missing:
         raise SyncError(
             f"{Marker.NO_CHECKSUM_RECORDED}: {std.id} v{rel.version}\n"
@@ -832,8 +840,7 @@ def _plan_release(
             f"  silently disables every later integrity comparison for that file."
         )
 
-    return ReleasePlan(rel, vdir, planned, orphans, damaged_metadata, prior, publishing_now,
-                       dormant)
+    return ReleasePlan(rel, vdir, planned, orphans, damaged_metadata, prior, publishing_now)
 
 
 def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) -> None:
@@ -982,7 +989,19 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
         # dormancy is sticky, so no later cycle could ever repair it. Only that field is
         # touched, and SHA256SUMS is left alone, because the artifact records are the prior
         # ones carried forward and may predate checksum recording entirely.
-        if prior is not None and prior.get("served") != rel.served:
+        if prior is None:
+            # Nothing to correct and nothing safe to rebuild: corroborating the files would
+            # mean fetching, which is the one thing dormancy forbids, and recording them
+            # unchecked would certify bytes nobody has verified. Re-serving the release ends
+            # dormancy and puts it back on the ordinary published path, which restores or
+            # refuses; until then this is reported rather than repaired.
+            stats.unreadable += 1
+            log(
+                f"  [WARN] {std.id} v{rel.version}: no provenance record, and the release is not "
+                f"served so it cannot be rebuilt. Set served: true to repair it."
+            )
+            return
+        if prior.get("served") != rel.served:
             atomic_write(prov_path, (json.dumps({**prior, "served": rel.served}, indent=2) + "\n").encode())
             log(f"  [meta] {std.id} v{rel.version}/{PROVENANCE_NAME} (served: {rel.served})")
         return
@@ -1058,6 +1077,15 @@ def _plan_dry_run(std: Standard, rel: Release, client: httpx.Client, stats: Sync
     the message the way the runbooks expect, and one unreachable release is not counted as
     the whole standard having established nothing.
     """
+    # The same dormancy rule the real planner applies, for the same reason and stated the same
+    # way. Without it the gate rejected what the sync deliberately accepts: a release withdrawn
+    # because its upstream tag was retired probes UNREACHABLE, so every pull request from then
+    # on failed this step, and no manifest edit could fix it because a published release cannot
+    # be dropped. The dry run has no volume, so dormancy is read off the manifest alone.
+    if rel.ever_published and not rel.served:
+        log(f"  [plan] {std.id} v{rel.version}: not served, so nothing is probed")
+        return
+
     missed = 0
     for art in rel.artifacts:
         resolved = resolve(std, rel, art, client)

@@ -126,9 +126,9 @@ def cmd_validate(args) -> int:
     return EXIT_OK
 
 
-def cmd_sync(args) -> int:
+def cmd_sync(args, standards=None) -> int:
     root = _resolve_root(args)
-    standards = _load(root)
+    standards = _load(root) if standards is None else standards
 
     # Checked before any work, and per id rather than in aggregate. Asking only whether
     # *anything* matched let a mistyped id alongside a valid one be dropped in silence, which
@@ -241,9 +241,9 @@ def cmd_exit_codes(args) -> int:
     return EXIT_OK
 
 
-def cmd_build(args) -> int:
+def cmd_build(args, standards=None) -> int:
     root = _resolve_root(args)
-    standards = _load(root)
+    standards = _load(root) if standards is None else standards
     # I/O on the shared volumes is the likely build failure - full disk, read-only mount -
     # and OSError is not what main() catches, so it escaped as a traceback and took the
     # sync's exit code with it when the two were composed by `cairn all`.
@@ -269,14 +269,18 @@ def cmd_all(args) -> int:
     # Render even when a standard failed to sync. The standards that did sync are on disk and
     # should reach the site; withholding the render because of an unrelated failure would
     # freeze the whole site at its last good state. The non-zero exit still propagates.
-    sync_rc = cmd_sync(args)
+    # Loaded once and handed to both halves. Each used to parse and JSON-Schema-validate every
+    # manifest for itself, so a syncer cycle did it twice - and if the repo were pulled between
+    # the two, the render would describe a different registry from the one just replicated.
+    standards = _load(_resolve_root(args))
+    sync_rc = cmd_sync(args, standards)
     # --dry-run is documented as "resolve + check reachability without writing", and the render
     # is the step that writes most: every page, the catalog, the sitemap, the error pages, the
     # assets and the generated nginx routes file. Running it anyway meant the one flag an
     # operator reaches for to inspect a live volume safely rewrote the whole document root.
     if args.dry_run:
         return sync_rc
-    build_rc = cmd_build(args)
+    build_rc = cmd_build(args, standards)
     # A build that produced nothing to serve outranks whatever the sync found, because the
     # sync's codes all describe a run that finished. This is now a real ranking: cmd_build
     # returns EXIT_INCOMPLETE for an I/O failure rather than letting it escape as a traceback.

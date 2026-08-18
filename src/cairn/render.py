@@ -99,7 +99,7 @@ def _humansize(n: int | None) -> str:
 
 
 @lru_cache(maxsize=None)
-def _load_provenance(root: Path, std_id: str, version: str) -> dict | None:
+def _load_provenance(vdir: Path) -> dict | None:
     """Read a release's provenance for display, or None if it cannot be used.
 
     The render must survive anything the sync refuses. A damaged record on one release used
@@ -107,6 +107,10 @@ def _load_provenance(root: Path, std_id: str, version: str) -> dict | None:
     one rotted file froze every healthy standard's pages, routes and 410s at their last
     state. The sync reports the damage and refuses that release; the site keeps rendering
     with whatever it can show, which is the checksums missing from one release's page.
+
+    Keyed on the release directory rather than on the workspace root, because that is the path
+    it actually opens: the root is resolved through `site_dir`, which CAIRN_SITE_DIR overrides,
+    so two builds under one root but different document roots shared a cache entry.
 
     Memoised for the duration of one build. Three call sites want the same record - the release
     page context, the namespace document of a major line's latest release, and the catalog - so
@@ -118,7 +122,7 @@ def _load_provenance(root: Path, std_id: str, version: str) -> dict | None:
     once - the sync rejected valid JSON of the wrong shape a release before this side learned
     to - and the whole point of a shape contract is that both ends hold the same one.
     """
-    path = site_dir(root) / std_id / f"v{version}" / PROVENANCE_NAME
+    path = vdir / PROVENANCE_NAME
     if not path.exists():
         return None
     try:
@@ -146,7 +150,7 @@ def _github_link(source: dict | None) -> str | None:
 
 
 def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
-    prov = _load_provenance(root, std.id, rel.version)
+    prov = _load_provenance(site_dir(root) / std.id / f"v{rel.version}")
     prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
     views = []
     for art in rel.artifacts:
@@ -323,7 +327,7 @@ def render_site(standards: list[Standard], root: Path, log=print) -> int:
 
 def _render_catalog(standards: list[Standard], root: Path) -> str:
     def artifact_json(std, rel):
-        prov = _load_provenance(root, std.id, rel.version)
+        prov = _load_provenance(site_dir(root) / std.id / f"v{rel.version}")
         prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
         out = []
         for art in rel.artifacts:

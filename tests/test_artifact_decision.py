@@ -9,6 +9,11 @@ was found writing whatever upstream now served into a write-once URL, with 483 t
 `_decide` is a pure function of named evidence, so the space can simply be enumerated. No
 filesystem, no network, no manifest: the point is to check the branch selection itself rather
 than to re-test the plumbing around it.
+
+Dormancy is deliberately not one of the dimensions. It is a property of the release, not of an
+artifact, and deciding it here still let `resolve()` run first - which for a `release-asset`
+artifact is a GitHub API call that raises when the tag is gone. It is a single early return in
+the planners now, covered by tests/test_sync_freeze.py.
 """
 
 from __future__ import annotations
@@ -23,7 +28,6 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 
 WRITE_ONCE_SAFE = {
-    Verdict.SKIP_DORMANT,
     Verdict.SKIP_FROZEN,
     Verdict.SKIP_CORROBORATED,
     Verdict.VERIFY,
@@ -36,9 +40,9 @@ WRITE_ONCE_SAFE = {
 
 def _states():
     """Every coherent evidence combination, after the fetch."""
-    for (mutable, dormant, publishing, promised, verify, recorded, has_sha, moved, on_disk,
+    for (mutable, publishing, promised, verify, recorded, has_sha, moved, on_disk,
          served, upstream) in itertools.product(
-            (False, True), (False, True), (False, True), (False, True), (False, True),
+            (False, True), (False, True), (False, True), (False, True),
             (False, True), (False, True), (False, True), (False, True),
             (None, SHA_A, SHA_B), (SHA_A, SHA_B)):
         # Impossible by construction rather than by policy, so excluding them is not a way of
@@ -53,12 +57,10 @@ def _states():
         if on_disk and served is None:
             continue  # unreadable is modelled by served=None with on_disk False
         # The release-level flags are derived from one another in _plan_release.
-        if promised and (mutable or publishing or dormant):
-            continue
-        if dormant and mutable:
+        if promised and (mutable or publishing):
             continue
         yield Evidence(
-            mutable=mutable, dormant=dormant, publishing=publishing, promised=promised,
+            mutable=mutable, publishing=publishing, promised=promised,
             verify=verify, recorded=recorded, recorded_sha=SHA_A if has_sha else None,
             moved=moved, on_disk=on_disk, served_sha=served, upstream_sha=upstream,
         )
@@ -96,12 +98,6 @@ def test_every_state_decides_something_and_asks_for_bytes_only_once(e):
 
 
 @pytest.mark.parametrize("e", STATES, ids=lambda e: "")
-def test_a_dormant_release_is_always_left_alone(e):
-    if e.dormant:
-        assert _decide(e) is Verdict.SKIP_DORMANT
-
-
-@pytest.mark.parametrize("e", STATES, ids=lambda e: "")
 def test_the_accepting_verdicts_agree_with_what_is_on_disk(e):
     """Each accept path implies something concrete about the served copy. These are the
     statements the commit phase relies on without re-checking them."""
@@ -116,7 +112,7 @@ def test_the_accepting_verdicts_agree_with_what_is_on_disk(e):
 
 def test_before_the_fetch_only_the_no_bytes_verdicts_are_reachable():
     """The first call may only skip or ask; anything else would decide without evidence."""
-    allowed = {Verdict.FETCH, Verdict.SKIP_DORMANT, Verdict.SKIP_FROZEN}
+    allowed = {Verdict.FETCH, Verdict.SKIP_FROZEN}
     seen = set()
     for e in STATES:
         verdict = _decide(Evidence(**{**e.__dict__, "upstream_sha": None, "served_sha": None}))
