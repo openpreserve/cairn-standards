@@ -302,3 +302,26 @@ def test_an_artifact_may_not_be_named_after_a_file_cairn_generates(tmp_path):
         d = _write_manifest(tmp_path / name, body)
         with pytest.raises(ManifestError, match="cairn generates"):
             load_standard(d, root=tmp_path / name)
+
+
+def test_a_baseline_from_before_a_schema_change_fails_legibly(tmp_path):
+    """The baseline worktree carries its own schema, so a manifest from another revision passes
+    the validator sitting beside it and then meets model code expecting a different shape.
+
+    That produced a bare KeyError: a traceback with no marker, no file name and no hint that
+    the cause was a cross-revision comparison rather than a broken manifest. CI runs exactly
+    this on every pull request.
+    """
+    old_shape = VALID.replace("lifecycle: published", "status: stable")
+    d = _write_manifest(tmp_path, old_shape)
+    # The workspace schema is replaced with one that accepts the old shape, which is what a
+    # baseline checkout of an earlier revision amounts to.
+    schema = json.loads((tmp_path / "schemas" / "standard.schema.json").read_text())
+    release = schema["$defs"]["release"]
+    release["required"] = ["version", "status", "artifacts"]
+    release["properties"]["status"] = {"type": "string"}
+    del release["if"], release["then"]
+    (tmp_path / "schemas" / "standard.schema.json").write_text(json.dumps(schema))
+
+    with pytest.raises(ManifestError, match="predates a schema change"):
+        load_standard(d, root=tmp_path)

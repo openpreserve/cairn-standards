@@ -352,7 +352,19 @@ def load_standard(directory: Path, validator: Draft202012Validator | None = None
         ]
         raise ManifestError(f"{manifest_file}: schema validation failed:\n" + "\n".join(lines))
 
-    std = _build(data, directory)
+    # _build reads keys the schema has just guaranteed - but the schema it was checked against
+    # is the one in *that* workspace, and a baseline worktree carries its own. So a manifest
+    # from before a schema change passes its own validator and then meets model code that
+    # expects the new shape. A KeyError there is a traceback with no marker and no file name;
+    # this says which field and which revision.
+    try:
+        std = _build(data, directory)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ManifestError(
+            f"{manifest_file}: valid against the schema beside it, but this build of cairn cannot "
+            f"read it ({exc!r}). That normally means the manifest predates a schema change - the "
+            f"write-once baseline check compares against another revision, and it cannot span one."
+        ) from exc
     sem_errors = _semantic_checks(std, manifest_file)
     if sem_errors:
         raise ManifestError(
