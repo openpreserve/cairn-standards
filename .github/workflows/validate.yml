@@ -32,16 +32,6 @@ jobs:
       - name: Validate manifests
         run: cairn validate
 
-      # Write-once is a property of the manifest *diff*, so it is checked here, against the
-      # branch being merged into, rather than only in the syncer. Enforcing it solely at
-      # replication time meant a change that unpublishes a live URL merged green and failed
-      # on the deployment instead, where nobody is watching and the site stops updating.
-      - name: Write-once check against the base branch
-        if: github.event_name == 'pull_request'
-        run: |
-          git worktree add /tmp/baseline "origin/${{ github.base_ref }}"
-          cairn validate --baseline /tmp/baseline
-
       - name: Unit tests
         run: pytest -q
 
@@ -81,3 +71,17 @@ jobs:
       # where it is cheap to fix. Same code, opposite correct response.
       - name: Render build
         run: cairn build
+
+      # Last, deliberately. This is the only step that depends on another revision of the
+      # repository, so it is the only one that can fail for reasons unrelated to the code under
+      # test - and a failed step aborts the job, so running it earlier hid the unit tests, the
+      # deployment files, the upstream probe and the render behind it. A real write-once
+      # violation still turns the job red; it just no longer costs you every other answer.
+      #
+      # It cannot span a manifest format change: the baseline worktree is validated against the
+      # schema it carries and then built by this revision's model code.
+      - name: Write-once check against the base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git worktree add /tmp/baseline "origin/${{ github.base_ref }}"
+          cairn validate --baseline /tmp/baseline
