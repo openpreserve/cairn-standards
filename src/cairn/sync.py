@@ -17,14 +17,14 @@ import fnmatch
 import json
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 
 import httpx
 
-from .config import RELEASE_PAGE_NAME, site_dir
+from .config import PROVENANCE_NAME, RELEASE_PAGE_NAME, SUMS_NAME, site_dir
 from .manifest import (
     Lifecycle,
     Artifact,
@@ -51,7 +51,7 @@ API_BASE = "https://api.github.com"
 
 # Written into a release directory by something other than the artifact loop: the render's
 # page for that release, and this module's own metadata. Never candidates for reaping.
-GENERATED_NAMES = frozenset({RELEASE_PAGE_NAME, "provenance.json", "SHA256SUMS"})
+GENERATED_NAMES = frozenset({RELEASE_PAGE_NAME, PROVENANCE_NAME, SUMS_NAME})
 
 
 class SyncError(Exception):
@@ -361,6 +361,110 @@ class ReleasePlan:
         return [p.record for p in self.artifacts]
 
 
+class Verdict(StrEnum):
+    """What to do with one artifact, chosen by `_decide` and nothing else.
+
+    The branch used to be selected by a chain of early returns over four release-level
+    booleans and three artifact-level ones, and every fix added another condition to it. The
+    combinations outgrew what anyone could hold in their head: a published release that had
+    lost provenance.json *and one of its two artifacts* took the write path and adopted
+    upstream in silence, which is the promise this module exists to keep.
+
+    Naming the outcomes makes the choice a pure function of observable evidence, so the whole
+    space can be enumerated in a test rather than reasoned about one path at a time.
+    """
+
+    FETCH = "fetch"                      # not enough evidence yet; get the bytes and ask again
+    SKIP_DORMANT = "skip-dormant"        # published, not served: read nothing, write nothing
+    SKIP_FROZEN = "skip-frozen"          # recorded, present, and this is not a verify pass
+    SKIP_CORROBORATED = "skip-corroborated"  # upstream agrees with what is already served
+    VERIFY = "verify"                    # frozen, re-read and confirmed against the record
+    RESTORE = "restore"                  # the served copy is wrong or gone; put it back
+    WRITE = "write"                      # new or changed bytes
+    REFUSE_CHANGED = "refuse-changed"
+    REFUSE_REPOINTED = "refuse-repointed"
+    REFUSE_UNVERIFIABLE = "refuse-unverifiable"
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """Everything `_decide` is allowed to look at. No filesystem, no network, no manifest.
+
+    Release-level facts come from the plan; artifact-level ones are read once by the caller.
+    Keeping them in one frozen object is what makes the decision reproducible in a test: the
+    invariant matrix drives states through the real sync, and this drives the branch directly,
+    including combinations the matrix cannot express because its dimensions are release-wide.
+    """
+
+    mutable: bool          # the release may be overwritten in place
+    dormant: bool          # published but not served
+    publishing: bool       # this cycle is the release's first publication
+    promised: bool         # published, and not by this cycle: the guards apply
+    verify: bool           # --verify: re-read what would otherwise be skipped
+    recorded: bool         # provenance holds a record for this artifact name
+    recorded_sha: str | None
+    moved: bool            # the manifest now resolves to different coordinates
+    on_disk: bool
+    served_sha: str | None   # digest of the served copy; None if missing or unreadable
+    upstream_sha: str | None  # None until the bytes have been fetched
+
+
+def _decide(e: Evidence) -> Verdict:
+    """Choose one outcome for one artifact. Pure, total, and the only place branches live.
+
+    Called twice: once before fetching, where `upstream_sha` is None and the answer may be
+    FETCH, and once after, where it may not be.
+    """
+    if e.dormant:
+        return Verdict.SKIP_DORMANT
+
+    # Nothing to compare against without the bytes. A record with no checksum carries no claim
+    # to trust, so it does not earn the fast path.
+    frozen_fast_path = e.recorded and e.recorded_sha and e.on_disk and not e.mutable and not e.publishing
+    if e.upstream_sha is None:
+        return Verdict.SKIP_FROZEN if (frozen_fast_path and not e.verify) else Verdict.FETCH
+
+    if e.promised:
+        # Refusals first, and all of them, before any accept path. Ordering them after the
+        # corroboration shortcut below let a repoint through: identical bytes at a new tag
+        # returned early and rewrote the recorded origin to follow the manifest, which is the
+        # one thing a published release's provenance must never do.
+        if e.recorded_sha and e.upstream_sha != e.recorded_sha:
+            return Verdict.REFUSE_CHANGED
+        if e.recorded and e.moved:
+            return Verdict.REFUSE_REPOINTED
+        if not e.recorded_sha:
+            # No checksum anywhere, so the served copy is the only witness to what was
+            # published. Upstream agreeing settles it; anything else needs a person, because
+            # a copy that disagrees, cannot be read, or is not there leaves no way to tell a
+            # volume that lost bytes from an upstream that was re-tagged.
+            #
+            # Reached with no record at all only for an artifact this release is promising,
+            # since a published release may not gain artifacts - `compare_to_baseline` refuses
+            # that edit. So "no record and no file" is a lost artifact, not a new one. Reading
+            # it as new is what let a release that lost provenance.json and one artifact write
+            # whatever upstream now served into a write-once URL and record it as published.
+            if e.served_sha != e.upstream_sha:
+                return Verdict.REFUSE_UNVERIFIABLE
+            return Verdict.SKIP_CORROBORATED
+
+        if not e.on_disk:
+            # Recorded, corroborated by upstream, and simply gone from the volume. Recoverable,
+            # but a write-once URL was answering 404, so it takes the repair path rather than
+            # being logged as an ordinary fetch.
+            return Verdict.RESTORE
+
+    if e.recorded and e.recorded_sha == e.upstream_sha and e.on_disk:
+        # Upstream agrees with the record, which leaves the served copy as the only thing still
+        # unchecked - and the only one anyone reads. Bit rot, a truncated write or a bad restore
+        # all leave upstream and the record agreeing while the bytes on disk are wrong.
+        if e.served_sha != e.upstream_sha:
+            return Verdict.RESTORE
+        return Verdict.VERIFY if frozen_fast_path else Verdict.SKIP_CORROBORATED
+
+    return Verdict.WRITE
+
+
 class SourceState(StrEnum):
     """How an artifact's recorded origin compares to where it now resolves."""
 
@@ -464,7 +568,7 @@ def _plan_release(
     # cycle, exiting 0. A mutable release has no such promise to keep, so it is rebuilt and
     # reported rather than refused.
     damaged_metadata = False
-    prov_path = vdir / "provenance.json"
+    prov_path = vdir / PROVENANCE_NAME
     try:
         prior = _load_prior_provenance(prov_path)
     except ProvenanceUnavailable as exc:
@@ -585,150 +689,13 @@ def _plan_release(
     # what it promises, or the draft's bytes wait to be served the moment it is restored.
     dormant = rel.ever_published and not rel.served and not publishing_now
 
-    planned: list[PlannedArtifact] = []
-    for art in rel.artifacts:
-        resolved = resolve(std, rel, art, client)
-        dest = vdir / art.name
-        frozen = prior_arts.get(art.name)
-
-        # The record is required, because there would otherwise be nothing to carry forward
-        # into provenance.json. The file deliberately is not: requiring it sent a dormant
-        # release whose artifact had been removed down the fetch path, where a re-tagged
-        # upstream - the usual reason a release is withdrawn - failed that standard on every
-        # cycle with no way out, which is the trap this rule exists to close.
-        if dormant and frozen is not None:
-            planned.append(PlannedArtifact(art.name, dest, Action.SKIP, frozen))
-            continue
-        # `served` is deliberately absent. Un-serving a release does not un-freeze it, so its
-        # guards stay on, but there is also no reason to re-fetch bytes that answer 410; asking
-        # `ever_published and served` here would put every un-served release back on the wire on
-        # every cycle for a URL nobody can reach.
-        is_frozen = frozen is not None and dest.exists() and not mutable and not publishing_now
-
-        # A record with no checksum is not something to skip on: there is no claim in it to
-        # trust. Those go down the fetch path so the bytes can be corroborated below.
-        if is_frozen and not verify and frozen.get("sha256"):
-            planned.append(PlannedArtifact(art.name, dest, Action.SKIP, frozen))
-            continue
-
-        data = _fetch(resolved.url, client)
-        digest = sha256_hex(data)
-
-        # No checksum was ever recorded, so the served copy is the only thing that can say what
-        # was published. Upstream agreeing with it settles the question; anything else is a
-        # question for a person, because a copy that disagrees, cannot be read, or is not there
-        # leaves no way to tell a volume that lost bytes from an upstream that was re-tagged,
-        # and those want opposite answers. Not gated on the file existing: a vanished artifact
-        # needs this guard most.
-        if frozen_promise and not (frozen or {}).get("sha256"):
-            served = _served_digest(dest)
-            # No record and no file is not a lost artifact, it is a version being published
-            # for the first time, and it has nothing to contradict.
-            was_published_before = frozen is not None or dest.exists()
-            if was_published_before and served != digest:
-                raise SyncError(
-                    f"{Marker.UNVERIFIABLE_PUBLISHED_FILE}: {std.id} v{rel.version}/{art.name}\n"
-                    f"  on disk  {served or 'missing, or could not be read'}\n"
-                    f"  upstream sha256 {digest}\n"
-                    f"  This version is published, but no checksum was ever recorded for it, so\n"
-                    f"  there is nothing here that can say whether the served copy was lost or\n"
-                    f"  changed, or whether upstream has been re-tagged. Writing upstream's bytes\n"
-                    f"  would settle that by assumption and destroy the evidence. Confirm against\n"
-                    f"  an independent copy, then restore the file or publish a new version."
-                )
-            # Corroborated, so there is nothing to write. Falling through to a plain write
-            # reinstalled every artifact of a release whose provenance had been lost but whose
-            # bytes were intact, moving the inode and mtime - and therefore the ETag - of URLs
-            # nginx serves with immutable cache headers, for content that had not changed.
-            if was_published_before:
-                planned.append(PlannedArtifact(art.name, dest, Action.SKIP,
-                                               _artifact_record(art, resolved, data, digest,
-                                                                commit_for(resolved))))
-                continue
-
-        # `is_served` for the same reason its three siblings have it: withdrawing a release
-        # is exactly what you do when upstream has moved or gone, and nothing is published
-        # under one, so refusing it failed the whole standard every cycle for no promise.
-        if frozen and frozen_promise and frozen.get("sha256") and digest != frozen["sha256"]:
-            raise SyncError(
-                f"{Marker.FROZEN_VERSION_CHANGED}: {std.id} v{rel.version}/{art.name}\n"
-                f"  recorded sha256 {frozen['sha256']}\n"
-                f"  upstream sha256 {digest}\n"
-                f"  A released version's bytes must never change. Cut a new version instead."
-            )
-
-        # Checked here rather than alongside the record it protects, because the record is
-        # what this is about and the file may not be there. Nesting it under an existence
-        # check meant a published release whose artifact had gone missing skipped it, adopted
-        # the new upstream, and rewrote its provenance to match - a silent substitution in the
-        # guard written to prevent silent substitutions.
-        #
-        # `is_served` for the same reason every other guard here has it: a withdrawn release
-        # publishes nothing, so repointing it breaks no promise and must not fail the standard.
-        if frozen and frozen_promise and _source_state(frozen, art, resolved) is SourceState.MOVED:
-            raise SyncError(
-                f"{Marker.FROZEN_VERSION_REPOINTED}: {std.id} v{rel.version}/{art.name}\n"
-                f"  recorded source {frozen['source'].get('url')}\n"
-                f"  manifest now    {resolved.url}\n"
-                f"  A released version's recorded origin is part of what was published, so it\n"
-                f"  cannot be amended to follow the manifest. Restore the coordinates, or\n"
-                f"  publish the new source as a new version. `cairn validate --baseline` catches\n"
-                f"  this on a pull request, before it can reach a deployment."
-            )
-
-        # A published artifact that is simply gone. The bytes are recoverable, since upstream
-        # still matches the record, but a write-once URL was answering 404 and the volume lost
-        # a file nothing should have been able to remove. Recording it as an ordinary fetch
-        # reported that as a clean cycle; it is the same class of damage as byte drift, and
-        # arguably worse, so it takes the same path.
-        if frozen and frozen_promise and not dest.exists() and frozen.get("sha256") == digest:
-            planned.append(PlannedArtifact(art.name, dest, Action.RESTORE, frozen, data))
-            continue
-
-        # Upstream now agrees with the record, which leaves the copy we actually serve as the
-        # only one still unchecked - and the only one anyone reads. Bit rot on the volume, a
-        # truncated file from an interrupted write, or a bad restore all leave upstream and
-        # the record agreeing while the served bytes are wrong. Calling that "verified" is
-        # precisely backwards for a preservation registry, and on a mutable release it is
-        # worse: not rewriting unchanged bytes is what makes this branch reachable at all, so
-        # nothing else would ever read the file and the corruption would be permanent.
-        if frozen and frozen.get("sha256") == digest and dest.exists():
-            # Identical bytes can still arrive from somewhere else, and what that means depends
-            # entirely on whether the release is published. For a draft, repointing is allowed
-            # and changes nothing on disk, so reusing the old record would leave provenance.json
-            # naming an origin these bytes no longer come from. For a frozen release the
-            # recorded origin is itself part of what was published, so quietly rewriting it to
-            # follow the manifest is the one thing this file must never do.
-            # A frozen repoint was already refused above. A draft may move, and a record that
-            # never had coordinates at all should gain them.
-            record = frozen
-            state = _source_state(frozen, art, resolved)
-            if (mutable or publishing_now) and state is not SourceState.SAME:
-                record = _artifact_record(art, resolved, data, digest, commit_for(resolved))
-
-            if _served_matches(dest, digest):
-                # Keep the file and its record exactly as they are. Rewriting installs a new
-                # inode, moving the mtime and cache validators of content that did not change.
-                # Reaching here with is_frozen means --verify, since a frozen release without
-                # it returned above without fetching at all.
-                planned.append(PlannedArtifact(art.name, dest, Action.VERIFY if is_frozen else Action.SKIP, record))
-            else:
-                planned.append(PlannedArtifact(art.name, dest, Action.RESTORE, record, data))
-            continue
-
-        planned.append(
-            PlannedArtifact(
-                art.name,
-                dest,
-                Action.WRITE,
-                _artifact_record(art, resolved, data, digest, commit_for(resolved)),
-                data,
-            )
-        )
-
+    # Checked before the artifact loop so that the precise refusal wins: a manifest that drops
+    # one artifact and adds another would otherwise be refused for the replacement, which is
+    # true but names the wrong file.
+    #
+    # Dormant releases are not reaped: "left alone" has to mean the whole directory, or
+    # un-serving a release would quietly delete artifacts it is still promising.
     current_names = {art.name for art in rel.artifacts}
-    # Dormant releases are not reaped either: "left alone" has to mean the whole directory,
-    # or un-serving a release would quietly delete the artifacts it is still promising.
     orphans = [] if dormant else _orphan_names(vdir, current_names, prior, damaged_metadata)
 
     # Deleting a file from a frozen release turns a published 200 into a 404, which breaks
@@ -744,6 +711,109 @@ def _plan_release(
             f"  a deployment; if it has already been deployed, restoring the entries is the\n"
             f"  only fix that keeps the published URLs working."
         )
+
+    planned: list[PlannedArtifact] = []
+    for art in rel.artifacts:
+        resolved = resolve(std, rel, art, client)
+        dest = vdir / art.name
+        frozen = prior_arts.get(art.name)
+
+        evidence = Evidence(
+            mutable=mutable,
+            dormant=dormant,
+            publishing=publishing_now,
+            promised=frozen_promise,
+            verify=verify,
+            recorded=frozen is not None,
+            recorded_sha=(frozen or {}).get("sha256"),
+            moved=_source_state(frozen or {}, art, resolved) is SourceState.MOVED,
+            # UNRECORDED is deliberately not `moved`: a record with no coordinates is not
+            # evidence of a repoint. It still has to gain them, which the caller handles.
+            on_disk=dest.exists(),
+            served_sha=None,
+            upstream_sha=None,
+        )
+
+        verdict = _decide(evidence)
+        data = digest = None
+        if verdict is Verdict.FETCH:
+            data = _fetch(resolved.url, client)
+            digest = sha256_hex(data)
+            evidence = replace(evidence, upstream_sha=digest, served_sha=_served_digest(dest))
+            verdict = _decide(evidence)
+            assert verdict is not Verdict.FETCH, "the second decision may not ask for the bytes again"
+
+        if verdict is Verdict.REFUSE_CHANGED:
+            raise SyncError(
+                f"{Marker.FROZEN_VERSION_CHANGED}: {std.id} v{rel.version}/{art.name}\n"
+                f"  recorded sha256 {evidence.recorded_sha}\n"
+                f"  upstream sha256 {digest}\n"
+                f"  A released version's bytes must never change. Cut a new version instead."
+            )
+        if verdict is Verdict.REFUSE_REPOINTED:
+            raise SyncError(
+                f"{Marker.FROZEN_VERSION_REPOINTED}: {std.id} v{rel.version}/{art.name}\n"
+                f"  recorded source {frozen['source'].get('url')}\n"
+                f"  manifest now    {resolved.url}\n"
+                f"  A released version's recorded origin is part of what was published, so it\n"
+                f"  cannot be amended to follow the manifest. Restore the coordinates, or\n"
+                f"  publish the new source as a new version. `cairn validate --baseline` catches\n"
+                f"  this on a pull request, before it can reach a deployment."
+            )
+        if verdict is Verdict.REFUSE_UNVERIFIABLE:
+            raise SyncError(
+                f"{Marker.UNVERIFIABLE_PUBLISHED_FILE}: {std.id} v{rel.version}/{art.name}\n"
+                f"  on disk  {evidence.served_sha or 'missing, or could not be read'}\n"
+                f"  upstream sha256 {digest}\n"
+                f"  This version is published, but no checksum was ever recorded for it, so\n"
+                f"  there is nothing here that can say whether the served copy was lost or\n"
+                f"  changed, or whether upstream has been re-tagged. Writing upstream's bytes\n"
+                f"  would settle that by assumption and destroy the evidence. Confirm against\n"
+                f"  an independent copy, then restore the file or publish a new version."
+            )
+
+        if verdict is Verdict.SKIP_DORMANT:
+            # No record means nothing to carry into provenance.json. A published release cannot
+            # gain artifacts, so this is only reachable from an edit that predates that gate;
+            # leaving it unplanned keeps "dormant writes nothing" true.
+            if frozen is not None:
+                planned.append(PlannedArtifact(art.name, dest, Action.SKIP, frozen))
+            continue
+        if verdict is Verdict.SKIP_FROZEN:
+            planned.append(PlannedArtifact(art.name, dest, Action.SKIP, frozen))
+            continue
+
+        # The recorded origin is part of what a published release published, so it is never
+        # rewritten to follow the manifest - a repoint was refused above. A draft may move, and
+        # a record that never carried coordinates should gain them.
+        # A record with no checksum gains one here: upstream corroborated the served bytes, so
+        # this is the first cycle able to state what they are. A repoint on a published release
+        # was refused above, so rebuilding cannot quietly adopt new coordinates.
+        record = frozen
+        source_state = _source_state(frozen or {}, art, resolved)
+        if (
+            record is None
+            or not record.get("sha256")
+            or ((mutable or publishing_now) and source_state is not SourceState.SAME)
+        ):
+            record = _artifact_record(art, resolved, data, digest, commit_for(resolved))
+
+        if verdict is Verdict.RESTORE:
+            planned.append(PlannedArtifact(art.name, dest, Action.RESTORE, record, data))
+        elif verdict is Verdict.VERIFY:
+            planned.append(PlannedArtifact(art.name, dest, Action.VERIFY, record))
+        elif verdict is Verdict.SKIP_CORROBORATED:
+            # Keeping the file exactly as it is. Rewriting installs a new inode, moving the
+            # mtime and cache validators of content that did not change, under URLs nginx
+            # serves as immutable.
+            planned.append(PlannedArtifact(art.name, dest, Action.SKIP, record))
+        else:
+            planned.append(
+                PlannedArtifact(
+                    art.name, dest, Action.WRITE,
+                    _artifact_record(art, resolved, data, digest, commit_for(resolved)), data,
+                )
+            )
 
     # Asserted before the commit phase writes anything: raising from the commit loop would
     # leave the release half written. No path above can produce a record without a checksum
@@ -897,8 +967,9 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
     """
     rel = plan.release
     records = plan.records
-    prov_path = plan.vdir / "provenance.json"
-    sums_path = plan.vdir / "SHA256SUMS"
+    prior = plan.prior
+    prov_path = plan.vdir / PROVENANCE_NAME
+    sums_path = plan.vdir / SUMS_NAME
 
     # A dormant release was read and not written, and that has to include its metadata: its
     # records are the prior ones carried forward verbatim, so there is nothing to restate. It
@@ -906,6 +977,14 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
     # rendered into SHA256SUMS at all, and building it anyway raised KeyError from inside the
     # metadata writer for a release nothing had touched.
     if plan.dormant:
+        # One exception to "writes nothing": the record has to stop claiming the release is
+        # served, or provenance contradicts nginx for as long as it stays withdrawn - and
+        # dormancy is sticky, so no later cycle could ever repair it. Only that field is
+        # touched, and SHA256SUMS is left alone, because the artifact records are the prior
+        # ones carried forward and may predate checksum recording entirely.
+        if prior is not None and prior.get("served") != rel.served:
+            atomic_write(prov_path, (json.dumps({**prior, "served": rel.served}, indent=2) + "\n").encode())
+            log(f"  [meta] {std.id} v{rel.version}/{PROVENANCE_NAME} (served: {rel.served})")
         return
 
     provenance = {
@@ -925,7 +1004,6 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
     # is present would then let the early return below make that divergence permanent, in the
     # file users are told to run `sha256sum -c` against. Compared as bytes, because decoding
     # a file whose whole purpose is to detect damage is a way to crash on damage.
-    prior = plan.prior
     try:
         sums_current = sums_path.read_bytes()
     except OSError:
@@ -964,7 +1042,7 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
     # rather than falsely up to date, and the next cycle rewrites both.
     atomic_write(sums_path, expected_sums)
     atomic_write(prov_path, (json.dumps(provenance, indent=2) + "\n").encode())
-    log(f"  [meta] {std.id} v{rel.version}/provenance.json, SHA256SUMS")
+    log(f"  [meta] {std.id} v{rel.version}/{PROVENANCE_NAME}, {SUMS_NAME}")
 
 
 def _plan_dry_run(std: Standard, rel: Release, client: httpx.Client, stats: SyncStats, *, log) -> None:
