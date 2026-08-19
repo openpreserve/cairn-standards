@@ -30,11 +30,13 @@ major_lines:
     latest: 1.0.0
 
 releases:
-  # NOTE: `draft` = tracks the release_2026_07 branch and is re-synced each run.
-  # At the official release (end of July 2026) set lifecycle: published, maturity: stable, and
-  # pin `ref:` to the tag (a published release must pin its own ref).
+  # Frozen at the official TS-EAS release tag. `source.ref` above is the pre-release branch
+  # and is no longer consulted for this release: the release-level `ref:` overrides it.
   - version: 1.0.0
-    lifecycle: draft
+    lifecycle: published
+    maturity: stable
+    ref: EAS-2026-07
+    released: "2026-07-31"
     artifacts:
       - name: eaf.xsd
         role: schema
@@ -56,6 +58,6 @@ releases:
         role: taglibrary-pdf
         from: repo
         repo: SAA-SDT/EAS-TagLibraries
-        ref: master
+        ref: "20260701"
         path: pdf/EAF1-TL-eng.pdf
         title: "EAC-F Tag Library (PDF)"
