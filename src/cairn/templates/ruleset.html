@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ std.title }} v{{ rules.applies_to }} rules {{ rules.revision }}{% endblock %}
+{% block description %}Validation rules for {{ std.title }} v{{ rules.applies_to }}, revision {{ rules.revision }} ({{ rules.label }}).{% endblock %}
+{% block content %}
+  <p class="crumb"><a href="/">Standards</a> / <a href="/{{ std.id }}">{{ std.id }}</a> /
+    <a href="/{{ std.id }}/v{{ rules.applies_to }}">v{{ rules.applies_to }}</a> / rules {{ rules.revision }}</p>
+  <h1>{{ std.title }} <span class="note">validation rules {{ rules.revision }}</span>
+    <span class="badge {{ rules.label }}">{{ rules.label }}</span></h1>
+
+  <p class="lede">These rules apply to the whole <strong>v{{ rules.applies_to }}</strong> line, not to a
+    single release. They are versioned and frozen independently of the schemas, so revising them
+    never moves a schema version.</p>
+
+  <dl class="kv">
+    <dt>Applies to</dt>
+    <dd><a href="/{{ std.id }}/v{{ rules.applies_to }}">/{{ std.id }}/v{{ rules.applies_to }}</a>
+      (namespace <code>{{ namespace }}</code>)</dd>
+    {% if rules.minimum_version %}
+    <dt>Minimum version</dt>
+    <dd><a href="/{{ std.id }}/v{{ rules.minimum_version }}">v{{ rules.minimum_version }}</a>{% if minimum_release and not minimum_release.is_served %}
+      <span class="badge {{ minimum_release.label }}">{{ minimum_release.label }}</span>{% endif %} and later.
+      Earlier v{{ rules.applies_to }} releases are outside what this revision was written for.</dd>
+    {% else %}
+    <dt>Minimum version</dt><dd>None: every v{{ rules.applies_to }} release.</dd>
+    {% endif %}
+    <dt>Tested against</dt>
+    <dd>
+      {% if tested_release %}<a href="/{{ std.id }}/v{{ tested_release.version }}">v{{ tested_release.version }}</a>{% if not tested_release.is_served %}
+      <span class="badge {{ tested_release.label }}">{{ tested_release.label }}</span>{% endif %},
+      as stated by the rules' author{% else %}not recorded{% endif %}
+    </dd>
+    {% if rules.released %}<dt>Released</dt><dd>{{ rules.released }}</dd>{% endif %}
+  </dl>
+
+  {% if notes_html %}
+  <h2>Revision notes</h2>
+  <div class="prose">{{ notes_html | safe }}</div>
+  {% endif %}
+
+  <h2>Files</h2>
+  <table class="files">
+    <thead><tr><th>File</th><th>Type</th><th>Size</th><th>SHA-256</th><th>Source</th></tr></thead>
+    <tbody>
+      {% for a in artifacts %}
+      <tr>
+        <td><a href="{{ a.url }}"><code>{{ a.name }}</code></a><br><span class="note">{{ a.title }}</span></td>
+        <td><code>{{ a.media_type }}</code></td>
+        <td>{{ a.bytes | humansize }}</td>
+        <td class="hash">{{ a.sha256 or "-" }}</td>
+        <td>
+          {% if a.github %}<a href="{{ a.github }}">GitHub</a>{% if a.commit_short %}<br><span class="hash">{{ a.upstream_repo }}<br>@ {{ a.commit_short }}</span>{% endif %}
+          {% else %}-{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="note">Checksums are also published as
+    <a href="/{{ std.id }}/{{ rules.slug }}/SHA256SUMS"><code>SHA256SUMS</code></a>;
+    full fetch provenance (source URL, upstream ref, commit) is in
+    <a href="/{{ std.id }}/{{ rules.slug }}/provenance.json"><code>provenance.json</code></a>.</p>
+
+  <h2>Referencing these rules</h2>
+  <p>Pin to this exact revision. These bytes never change:</p>
+  <div class="url-panel">{{ base_url }}/{{ std.id }}/{{ rules.slug }}/{{ artifacts[0].name if artifacts }}</div>
+  {% if current_rules %}
+  <p>Or follow whichever revision is current{% if is_current %}, which is this one today{% endif %}:</p>
+  <div class="url-panel">{{ base_url }}/{{ std.id }}/v{{ rules.applies_to }}/{{ rules_segment }}/{{ latest_segment }}/{{ artifacts[0].name if artifacts }}</div>
+  <p class="note">Use the dated form in audit records and anywhere you need to state exactly which
+    rules something was validated against. Use the current form in documentation, where you mean
+    "the rules as they stand". Old revisions are never removed.</p>
+  {% else %}
+  <p class="note">There is no current-rules pointer for v{{ rules.applies_to }} yet. It resolves
+    only to a revision that is published and served, and this line has none, so
+    <code>/{{ std.id }}/v{{ rules.applies_to }}/{{ rules_segment }}/{{ latest_segment }}/</code>
+    does not answer. Cite the dated form above until a revision is frozen.</p>
+  {% endif %}
+{% endblock %}

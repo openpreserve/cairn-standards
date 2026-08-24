@@ -21,6 +21,7 @@ still escape.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import re
 from pathlib import Path
 
@@ -29,14 +30,20 @@ import pytest
 from cairn import cli
 from cairn.config import find_root
 from cairn.markers import Marker
+from cairn.sync import SyncStats
 from cairn.config import RELEASE_PAGE_NAME
 from cairn.config import GENERATED_NAMES
+from cairn.config import LATEST_SEGMENT, RULES_SEGMENT
 
 ROOT = find_root(Path(__file__).resolve().parent)
 SOURCES = sorted((ROOT / "src" / "cairn").glob("*.py"))
 REGISTRY = ROOT / "src" / "cairn" / "markers.py"
 SYNC_LOOP = ROOT / "deploy" / "sync-loop.sh"
-RUNBOOKS = [ROOT / "docs" / "concepts-and-gotchas.md", ROOT / "docs" / "README.md", ROOT / "README.md"]
+# Every document a reader could reasonably be in when they meet a marker or an exit code.
+# Globbed rather than listed, because the checks below are about whether a fact is written down
+# somewhere a person will find it, not about which file holds it - and a doc set that cannot be
+# reorganised without a test edit is one that stops being reorganised.
+RUNBOOKS = sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md", ROOT / "CONTRIBUTING.md"]
 
 MARKERS = {m.value for m in Marker}
 
@@ -89,6 +96,12 @@ def _runbook_text() -> str:
     return "\n".join(p.read_text(encoding="utf-8") for p in RUNBOOKS)
 
 
+def _exit_code_row(code: int) -> str | None:
+    """The documented meaning of one exit code, from wherever the doc set states it."""
+    match = re.search(rf"^\| {code} \| (.+)\|$", _runbook_text(), re.MULTILINE)
+    return match.group(1) if match else None
+
+
 @pytest.mark.parametrize("marker", sorted(MARKERS))
 def test_every_marker_is_documented(marker):
     """Every marker cairn can print is one an operator may have to act on.
@@ -96,8 +109,8 @@ def test_every_marker_is_documented(marker):
     Parametrised rather than aggregated so a failure names the marker rather than a list.
     """
     assert marker in _runbook_text(), (
-        f"{marker!r} can reach a deployment log with no runbook entry. "
-        f"Add it to docs/concepts-and-gotchas.md under 'When a cycle fails'."
+        f"{marker!r} can reach a deployment log with no entry in any document. "
+        f"Add it to the operator reference, which is where people are sent to look one up."
     )
 
 
@@ -173,20 +186,26 @@ def test_the_shell_loop_only_logs_registered_markers():
 
 def test_the_exit_code_table_describes_the_unit_the_code_counts():
     """Code 5 means the run established nothing, and what "nothing" is counted in moved from
-    standards to releases when a failing release stopped abandoning its siblings. The table,
-    the constant's comment and the shell loop all went on saying "every standard failed", which
-    is now false for a standard with one bad release and two good ones - the drift this module
-    exists to catch, in the row it is most expensive to misread."""
-    table = (ROOT / "docs" / "concepts-and-gotchas.md").read_text(encoding="utf-8")
-    row = re.search(rf"^\| {cli.EXIT_NOTHING_SUCCEEDED} \| (.+)\|$", table, re.MULTILINE)
+    standards to releases when a failing release stopped abandoning its siblings, then to
+    publications when rules revisions joined the same pass. The table, the constant's comment
+    and the shell loop all went on saying "every standard failed", which is now false for a
+    standard with one bad release and two good ones - the drift this module exists to catch, in
+    the row it is most expensive to misread.
+
+    The word is read off the counter rather than written here, so renaming the counter without
+    touching the table fails instead of quietly re-introducing the drift.
+    """
+    counter = next(f.name for f in dataclasses.fields(SyncStats) if f.name.endswith("_failed"))
+    unit = counter.removesuffix("s_failed")
+    row = _exit_code_row(cli.EXIT_NOTHING_SUCCEEDED)
     assert row, "exit code 5 has no row"
-    assert "release" in row.group(1), (
-        f"the row for 5 says {row.group(1)!r}; nothing_succeeded counts releases, not standards"
+    assert unit in row, (
+        f"the row for 5 says {row!r}; nothing_succeeded counts {unit}s, not standards"
     )
 
 
-def test_the_cache_map_knows_every_generated_file_in_a_release_directory():
-    """nginx.conf decides which files under a version URL may be cached for a year.
+def test_the_cache_map_knows_every_generated_file_in_a_publication_directory():
+    """nginx.conf decides which files under a publication URL may be cached for a year.
 
     A release directory holds write-once artifacts, which are immutable and should be, beside
     files the sync and the render rewrite - so the cache map names the second group to keep
@@ -195,16 +214,93 @@ def test_the_cache_map_knows_every_generated_file_in_a_release_directory():
     constant - the change it exists to make safe - would drop the release page into the
     `immutable` arm one line below: a year-long, unrecallable cache on a page re-rendered
     whenever a template changes.
+
+    Every such group, not the first one found. A rules revision directory holds the same three
+    generated files under a differently-shaped URL and therefore needs its own entry; checking
+    only the first match would have let that second copy list something else entirely while
+    this test kept reporting on the release one.
     """
-    conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
-    short_lived = re.search(r"\(([^)]*)\)\?\$", conf)
-    assert short_lived, "the cache map no longer has a group naming the re-rendered files"
-    named = set(short_lived.group(1).replace("\\", "").split("|"))
-    assert named == set(GENERATED_NAMES), (
-        f"nginx.conf caches {sorted(named)} as short-lived, but the sync treats "
-        f"{sorted(GENERATED_NAMES)} as generated. A file in one list and not the other is "
-        f"either cached for a year by mistake or reaped by mistake."
+    groups = re.findall(r"\(([^)]*)\)\?\$", "\n".join(_cache_map()))
+    assert groups, "the cache map no longer has a group naming the re-rendered files"
+    for group in groups:
+        named = set(group.replace("\\", "").split("|"))
+        assert named == set(GENERATED_NAMES), (
+            f"nginx.conf caches {sorted(named)} as short-lived, but the sync treats "
+            f"{sorted(GENERATED_NAMES)} as generated. A file in one list and not the other is "
+            f"either cached for a year by mistake or reaped by mistake."
+        )
+
+
+def _cache_map() -> list[str]:
+    """The `$cairn_cache` map's own lines, so a comment mentioning a path cannot be read as a
+    rule about it."""
+    conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(conf) if line.strip().endswith("$cairn_cache {"))
+    end = next(i for i, line in enumerate(conf[start:], start) if line.strip() == "}")
+    return conf[start:end]  # the `map ... {` line included, so its source variable is readable
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [r"v[0-9]+\.[0-9]+\.[0-9]+/", rf"v[0-9]+/{RULES_SEGMENT}/[^/]+/"],
+    ids=["release", "rules-revision"],
+)
+def test_every_frozen_url_shape_is_cached_as_immutable(shape):
+    """A shape with no immutable arm serves permanent bytes as if they might change.
+
+    The rules paths carry a bare major (`v4`), not a dotted version, so they match neither of
+    the release entries and would silently take the 300s default - correct, but wrong about
+    what it is describing, and it costs a fetch of every rules file on every request.
+    """
+    assert any(shape in line and "immutable" in line for line in _cache_map()), (
+        f"no immutable cache entry matches {shape}"
     )
+
+
+def test_the_draft_marker_the_routes_set_is_the_one_the_cache_map_reads():
+    """Two halves of one decision, in two files that cannot import each other.
+
+    `cairn build` generates `set $cairn_mutable mutable;` for every draft; `deploy/nginx.conf`
+    keys its cache map on that variable. Rename it on either side and nothing fails loudly:
+    nginx starts, every URL still answers, and drafts quietly go back to being cached for a
+    year - the exact failure this pair was introduced to end.
+    """
+    from cairn.manifest import Artifact, Lifecycle, MajorLine, Release, Source, Standard, Steward
+    from cairn.nginx import render_routes
+
+    draft = Standard(
+        id="demo", title="Demo", summary="s", steward=Steward(org="x"),
+        source=Source(type="github", repo="o/r", ref="main"),
+        major_lines=[MajorLine(major=1, latest="1.0.0")],
+        releases=[Release(version="1.0.0", lifecycle=Lifecycle.DRAFT, artifacts=[
+            Artifact(name="demo.xsd", role="schema", from_="repo", path="demo.xsd")])],
+    )
+    generated = re.findall(r"set (\$[a-z_]+) ", render_routes([draft]))
+    assert generated, "no draft is marked at all; every draft would be cached as immutable"
+
+    source = next(line for line in _cache_map() if line.strip().endswith("$cairn_cache {"))
+    for variable in set(generated):
+        assert variable in source, (
+            f"the routes set {variable}, but the cache map keys on {source.strip()!r}. "
+            f"A draft would be cached as if it were frozen."
+        )
+
+
+def test_the_moving_rules_pointer_is_matched_before_the_immutable_rules_rule():
+    """`latest` sits at the same depth as a revision, so the immutable rule matches it too.
+
+    nginx takes the first map entry that matches, so ordering is the whole guard. Below the
+    immutable rule, the pointer every citation is told to use would be cached for a year, which
+    pins each reader to whichever revision was current the first time they asked - and there is
+    no way to recall it.
+    """
+    lines = _cache_map()
+    pointer = next(i for i, line in enumerate(lines) if f"{RULES_SEGMENT}/{LATEST_SEGMENT}" in line)
+    frozen = next(
+        i for i, line in enumerate(lines)
+        if rf"v[0-9]+/{RULES_SEGMENT}/[^/]+/" in line and "immutable" in line
+    )
+    assert pointer < frozen, "the immutable rules rule is matched before the latest pointer"
 
 
 @pytest.mark.parametrize(
@@ -215,9 +311,8 @@ def test_the_cache_map_knows_every_generated_file_in_a_release_directory():
 def test_every_exit_code_has_a_documented_row(code):
     """The contract lives in three places. Two are pinned to each other by a test in
     test_cli.py; this pins the third, which had already drifted by one row."""
-    table = (ROOT / "docs" / "concepts-and-gotchas.md").read_text(encoding="utf-8")
-    assert re.search(rf"^\| {code} \| .+\|$", table, re.MULTILINE), (
-        f"exit code {code} is returned by cairn but has no row in the exit-code table"
+    assert _exit_code_row(code), (
+        f"exit code {code} is returned by cairn but has no row in any exit-code table"
     )
 
 
@@ -283,8 +378,7 @@ def test_the_docs_agree_with_the_exit_code_a_publication_actually_returns():
         f"build stage both assume it does not"
     )
 
-    for doc in ("concepts-and-gotchas.md", "promoting-a-draft-release.md"):
-        text = (ROOT / "docs" / doc).read_text(encoding="utf-8")
-        for line in text.splitlines():
+    for doc in RUNBOOKS:
+        for line in doc.read_text(encoding="utf-8").splitlines():
             if "VERSION PUBLISHED" in line and "exit" in line:
-                assert f"exits {EXIT_ATTENTION}" not in line, f"{doc}: {line.strip()}"
+                assert f"exits {EXIT_ATTENTION}" not in line, f"{doc.name}: {line.strip()}"

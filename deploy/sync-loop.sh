@@ -176,10 +176,10 @@ run_once() {
       return "$attention"
       ;;
     "$SYNC_RC_NOTHING_SUCCEEDED")
-      # Every release the pass attempted failed, so it re-read nothing. Stamping it would
+      # Every publication the pass attempted failed, so it re-read nothing. Stamping it would
       # record a verification that did not happen and suppress the next attempt for a full
       # interval, which is the original stamp bug arriving from the other direction.
-      log "no release synced successfully; nothing was verified"
+      log "nothing synced successfully; nothing was verified"
       return "$incomplete"
       ;;
     *)

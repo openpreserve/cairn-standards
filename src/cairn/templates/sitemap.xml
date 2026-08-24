@@ -3,11 +3,18 @@
   <url><loc>{{ base_url }}/</loc></url>
   {% for std in standards %}
   <url><loc>{{ base_url }}/{{ std.id }}</loc></url>
+  {# Served publications only. A sitemap tells a crawler a URL is worth indexing, and a
+     withdrawn release or revision answers 410 - a crawl error on every pass, for as long as
+     the history stays in the manifest, which is for ever. They remain listed for a reader on
+     the standard's landing page, which is where "this existed and is gone" belongs. #}
   {% for ml in std.sorted_major_lines() %}
   <url><loc>{{ base_url }}/{{ std.id }}/v{{ ml.major }}</loc></url>
+  {% for rules in std.sorted_rules(ml.major) if rules.is_served %}
+  <url><loc>{{ base_url }}/{{ std.id }}/{{ rules.slug }}</loc></url>
   {% endfor %}
-  {% for rel in std.sorted_releases() %}
-  <url><loc>{{ base_url }}/{{ std.id }}/v{{ rel.version }}</loc></url>
+  {% endfor %}
+  {% for rel in std.sorted_releases() if rel.is_served %}
+  <url><loc>{{ base_url }}/{{ std.id }}/{{ rel.slug }}</loc></url>
   {% endfor %}
   {% endfor %}
 </urlset>

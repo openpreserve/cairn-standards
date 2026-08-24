@@ -24,7 +24,7 @@ EXIT_OK = 0
 EXIT_INCOMPLETE = 1
 EXIT_ATTENTION = 3       # ran to the end; something happened an operator must see
 EXIT_STANDARD_FAILED = 4  # ran to the end; one or more standards failed
-EXIT_NOTHING_SUCCEEDED = 5  # ran to the end; every release failed, so nothing was checked
+EXIT_NOTHING_SUCCEEDED = 5  # ran to the end; every publication failed, so nothing was checked
 
 # `cairn validate` is a gate rather than a daemon step: it passes or it refuses, and a
 # refusal is a finding, not a crash. It shares 1 because both mean "do not proceed" and
@@ -87,8 +87,12 @@ def cmd_validate(args) -> int:
     standards = _load(root)
     for std in standards:
         n_rel = len(std.releases)
-        n_art = sum(len(r.artifacts) for r in std.releases)
-        print(f"  ✓ {std.id}: {std.title} - {n_rel} release(s), {n_art} artifact(s)")
+        n_art = sum(len(p.artifacts) for p in std.publications())
+        # Rules are named only when there are any. Printing "0 rules revision(s)" for every
+        # standard would make the line longer for every reader in order to tell almost all of
+        # them nothing.
+        rules = f", {len(std.rules)} rules revision(s)" if std.rules else ""
+        print(f"  ✓ {std.id}: {std.title} - {n_rel} release(s){rules}, {n_art} artifact(s)")
 
     if args.baseline:
         baseline_root = find_root(args.baseline)

@@ -21,9 +21,36 @@
     {% endfor %}
   </ul>
 
+  {% for ml in std.sorted_major_lines() %}
+  {% if rules_ctx[ml.major] %}
+  <h2>Validation rules for v{{ ml.major }}</h2>
+  <p class="note">Published on their own track: revising these never moves a schema version, and
+    every revision stays available permanently.</p>
+  <table class="files">
+    <thead><tr><th>Revision</th><th>Files</th><th>Tested against</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for ctx in rules_ctx[ml.major] %}
+      {% set rules = ctx.publication %}
+      <tr>
+        <td><a href="/{{ std.id }}/{{ rules.slug }}">{{ rules.revision }}</a>
+          {% if rules.released %}<br><span class="note">{{ rules.released }}</span>{% endif %}</td>
+        <td>
+          {% for a in ctx.artifacts %}
+          <a href="{{ a.url }}"><code>{{ a.name }}</code></a>{% if not loop.last %}<br>{% endif %}
+          {% endfor %}
+        </td>
+        <td>{% if rules.tested_against %}v{{ rules.tested_against }}{% else %}-{% endif %}
+          {% if rules.minimum_version %}<br><span class="note">v{{ rules.minimum_version }} and later</span>{% endif %}</td>
+        <td><span class="badge {{ rules.label }}">{{ rules.label }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endfor %}
   <h2>Releases</h2>
   {% for ctx in release_ctx %}
-  {% set rel = ctx.release %}
+  {% set rel = ctx.publication %}
   <h3 id="v{{ rel.version }}">
     <a href="/{{ std.id }}/v{{ rel.version }}">v{{ rel.version }}</a>
     <span class="badge {{ rel.label }}">{{ rel.label }}</span>

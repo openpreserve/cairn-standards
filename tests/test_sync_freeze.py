@@ -989,7 +989,7 @@ def test_several_failing_releases_are_reported_as_one_failed_standard(tmp_path):
     assert stats.nothing_succeeded, "every standard attempted failed; nothing was verified"
     message = stats.failures[0][1]
     assert message.count("FROZEN VERSION CHANGED") == 2, "a release's refusal was dropped"
-    assert message.splitlines()[0] == "2 of 2 release(s) of demo failed:"
+    assert message.splitlines()[0] == "2 of 2 publication(s) of demo failed:"
 
 
 def test_a_release_contributes_one_failure_however_many_ways_it_went_wrong(tmp_path):
@@ -1017,8 +1017,8 @@ def test_a_release_contributes_one_failure_however_many_ways_it_went_wrong(tmp_p
         sync_standard(std, tmp_path, Missing(b""), dry_run=True, log=lambda *a: None, stats=stats)
 
     # One release, one entry, and it opens with the marker rather than with a count.
-    assert stats.releases_attempted == 1 and stats.releases_failed == 1
-    assert str(raised.value).splitlines()[0].startswith("demo 1.0.0 unresolvable.xsd:")
+    assert stats.publications_attempted == 1 and stats.publications_failed == 1
+    assert str(raised.value).splitlines()[0].startswith("demo v1.0.0 unresolvable.xsd:")
 
 
 def test_a_single_failing_release_keeps_its_marker_on_the_first_line(tmp_path):
@@ -1073,7 +1073,7 @@ def test_a_run_where_every_release_failed_is_still_nothing_succeeded(tmp_path):
     with mock.patch("cairn.sync.http_client", lambda: _FakeClient(b"RETAGGED")):
         stats = sync_all([std], tmp_path, verify=True, log=lambda *a: None)
 
-    assert stats.releases_attempted == 2 and stats.releases_failed == 2
+    assert stats.publications_attempted == 2 and stats.publications_failed == 2
     assert stats.nothing_succeeded
 
 
@@ -1653,7 +1653,7 @@ def test_a_run_survives_stdout_dying_while_it_reports_a_failure(tmp_path):
     assert stats.failures, "the fault was not reported at all"
     assert stats.nothing_succeeded, (
         f"a run that established nothing reported otherwise: "
-        f"attempted={stats.releases_attempted} failed={stats.releases_failed}"
+        f"attempted={stats.publications_attempted} failed={stats.publications_failed}"
     )
 
 
