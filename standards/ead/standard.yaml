@@ -28,7 +28,10 @@ major_lines:
 
 releases:
   - version: 4.0.0
-    lifecycle: draft
+    lifecycle: published
+    maturity: stable
+    ref: EAS-2026-07
+    released: "2026-07-31"
     artifacts:
       - name: ead.xsd
         role: schema
@@ -49,6 +52,6 @@ releases:
         role: taglibrary-pdf
         from: repo
         repo: SAA-SDT/EAS-TagLibraries
-        ref: master
+        ref: "20260701"
         path: pdf/EAD4-TL-eng.pdf
         title: "EAD 4 Tag Library (PDF)"
