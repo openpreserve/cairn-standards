@@ -1,8 +1,8 @@
 # Publishing a validation-rules revision
 
 Schematron rules are published on their own track, separately from the schema versions they
-validate. This is the step-by-step for adding a revision, and the reasoning behind the shape,
-because the shape is the part that is easy to get wrong in a way nobody notices for a year.
+validate. This is the step-by-step for adding a revision, together with the reasoning behind
+the shape, because the shape is what makes the rest of it straightforward.
 
 If you only remember one thing: **a rules revision is not part of a release.** It hangs off
 the major line, it has its own dates, and it can be added to a standard whose releases are
@@ -116,10 +116,9 @@ edit: repointing a draft is allowed, and the cycle that publishes it re-fetches 
 **A draft revision never becomes `latest`.** The pointer resolves only to a revision that is
 published and served. A major line's `latest` for releases may point at a draft, but that
 target is written down by a person in `major_lines`; this one is derived by sorting, so a draft
-added to track a branch would capture the pointer with nobody deciding that it should - and
-what `latest` resolves to is served under a dated path with a year-long immutable cache. Until
-a line has frozen its first revision there are no current rules, `latest` answers 404, and the
-drafts stay reachable at their own dated URLs.
+added to track a branch would capture the pointer with nobody deciding that it should. Until a
+line has frozen its first revision there are no current rules to cite, `latest` answers 404,
+and the drafts stay reachable at their own dated URLs.
 
 ## Checklist
 
@@ -144,10 +143,13 @@ Exactly what happens for a release, because it is the same code: `cairn sync` lo
 write-once guard applies to it. Seeing that marker when you published nothing means a
 directory was lost and has been rebuilt from its pinned ref, which is worth looking into.
 
-## Routing, and the trap in it
+## How the routing is put together
 
-The rules locations must be generated **before** the pin-to-latest redirect for their major
-line. nginx tries regex locations in declaration order and takes the first that matches, and
+You do not need this to publish a revision. It is here because the ordering is a real
+constraint on anyone changing the route generator.
+
+The rules locations are generated **before** the pin-to-latest redirect for their major line.
+nginx tries regex locations in declaration order and takes the first that matches, and
 
 ```nginx
 location ~ "^/ead/v4/(?<cairn_rest>.+)$" { return 303 /ead/v4.0.0/$cairn_rest; }
@@ -162,10 +164,12 @@ the kind of failure anyone spots in a log.
 the second place in the codebase to depend on nginx's declaration order; `deploy/nginx.conf`
 carries the first, for the dotfile guard, and both are pinned by tests rather than by care.
 
-The cache map in `deploy/nginx.conf` has the matching hazard. A rules path carries a bare major
-(`v4`), not a dotted version, so it matches neither release entry and needs its own; and
-`latest` sits at the same depth as a revision, so it must be matched *before* the immutable
-rule or the pointer every citation uses would be cached for a year.
+The cache map in `deploy/nginx.conf` needs the same care in the same direction. A rules path
+carries a bare major (`v4`), not a dotted version, so it matches neither release entry and has
+its own; `latest` sits at the same depth as a revision, so it is matched *before* the immutable
+rule, or the pointer every citation uses would be cached for a year. A draft revision is kept
+short-lived by the generated rule described in
+[The URL contract](url-contract.md#caching).
 
 ## Reference
 
@@ -176,6 +180,6 @@ rule or the pointer every citation uses would be cached for a year.
 - `Standard.latest_rules` in `src/cairn/manifest.py` - what the moving pointer resolves to.
 - `compare_to_baseline` in `src/cairn/manifest.py` - the write-once gate, which runs over
   revisions and releases alike.
-- General freezing behaviour is in
-  [Promoting a release from draft to stable](promoting-a-draft-release.md); it applies here
-  unchanged.
+- General freezing behaviour is in [Lifecycle and freezing](lifecycle-and-freezing.md), and it
+  applies here unchanged. The schema-version equivalent of this page is
+  [Publishing a release](publishing-a-release.md).

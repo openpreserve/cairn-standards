@@ -107,21 +107,25 @@ what; `cairn validate` refuses that rather than reporting a check it did not per
 - Rules revisions are dated (`YYYY-MM`), not semantic, and are attached to a major line rather
   than to a version. `/<id>/vMAJOR/schematron/latest` always resolves to the newest frozen one.
 
-Promoting a release from `draft` (tracking a branch) to `stable` (frozen) has a re-sync
-trap that can silently freeze the wrong bytes. Follow the runbook:
-[docs/promoting-a-draft-release.md](docs/promoting-a-draft-release.md).
+Taking a release from `draft`, where it tracks a branch, to `published`, where its bytes are
+frozen permanently, is a short procedure with a few refs that all have to be pinned. Follow it:
+[docs/publishing-a-release.md](docs/publishing-a-release.md).
 
 ## Further reading
 
-More detailed guides live in [docs/](docs/README.md):
+The full documentation is in [docs/](docs/README.md):
 
-- [Concepts and gotchas](docs/concepts-and-gotchas.md) - the non-obvious behaviour of the
-  URL contract, namespaces and content negotiation, lifecycle and serving, freezing, artifact sources,
-  validation, caching, and deployment.
-- [Promoting a release from draft to stable](docs/promoting-a-draft-release.md) - freezing a
-  release safely.
+- [The URL contract](docs/url-contract.md) - every URL Cairn serves and what each one promises.
+- [Manifest reference](docs/manifest-reference.md) - every field in `standard.yaml`, the four
+  artifact source types, and what validation checks.
+- [Lifecycle and freezing](docs/lifecycle-and-freezing.md) - `draft` against `published`, and
+  which edits the write-once gate refuses.
+- [Publishing a release](docs/publishing-a-release.md) - freezing a version at an official
+  release.
 - [Publishing a validation-rules revision](docs/publishing-a-rules-revision.md) - the separate
   track for Schematron, which moves without the schemas moving.
+- [Running the service](docs/running-the-service.md) and
+  [Operator reference](docs/operator-reference.md) - for whoever deploys it.
 
 ## Changing the tooling
 
