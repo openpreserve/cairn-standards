@@ -23,9 +23,53 @@ from .manifest import Standard
 from .util import atomic_write, reap_temp_files
 
 
+def _escaped(version: str) -> str:
+    """A version as a regex literal. The dots are what a location pattern must not treat as
+    wildcards: `v1.0.0` would otherwise also match `v1x0y0`."""
+    return version.replace(".", r"\.")
+
+
+def _mutable_location(path_pattern: str, why: str) -> list[str]:
+    """Serve a draft publication's directory, marking it as not cacheable for a year.
+
+    nginx assigns cache headers by URL shape, and a draft has the same shape as a frozen
+    release while its bytes still follow a branch: same dotted version, same directory, but
+    re-fetched and overwritten every cycle. Without this, every file of every draft went out
+    with `immutable, max-age=31536000`, and a client that has cached one never asks again - so
+    the correction a draft exists to allow could never reach anyone who had already looked.
+
+    It sets a variable rather than restating `Cache-Control`, because an `add_header` here
+    would replace the whole inherited set and silently drop CORS and `nosniff` along with it.
+    `$cairn_mutable` prefixes the cache map's key, and every rule in that map is anchored at
+    `^/`, so a prefixed key matches none of them and takes the short default.
+
+    Setting a variable is not a content handler, so the serving directives have to be restated
+    too: without them nginx falls back to the static module and answers a directory URI with
+    the append-a-slash redirect that `absolute_redirect off` turns into a loop.
+    """
+    return [
+        f"# {why}",
+        f'location ~ "{path_pattern}" {{',
+        f"    set $cairn_mutable mutable;",
+        f"    rewrite ^(.+)/$ $1 last;",
+        f"    try_files $uri $uri/{RELEASE_PAGE_NAME} =404;",
+        f"}}",
+    ]
+
+
 def _standard_block(std: Standard) -> str:
     lines: list[str] = [f"# ===================== {std.id} =====================",
                         f"location = /{std.id} {{ try_files /{std.id}/index.html =404; }}"]
+
+    # Before every other rule for this standard. A draft that is not served answers 410 and is
+    # skipped here entirely, so this can never shadow the 410s emitted at the end of the block.
+    for rel in std.releases:
+        if rel.is_mutable and rel.is_served:
+            lines += _mutable_location(
+                f"^/{std.id}/v{_escaped(rel.version)}/",
+                f"v{rel.version} is a draft: its bytes still follow a branch, so they may not "
+                f"be cached as immutable",
+            )
 
     for ml in std.sorted_major_lines():
         v = ml.major
@@ -51,9 +95,8 @@ def _standard_block(std: Standard) -> str:
 
     for rel in std.releases:
         if not rel.is_served:
-            ver = rel.version.replace(".", r"\.")
             lines.append(
-                f'location ~ "^/{std.id}/v{ver}(/.*)?$" {{ return 410; }}'
+                f'location ~ "^/{std.id}/v{_escaped(rel.version)}(/.*)?$" {{ return 410; }}'
             )
 
     lines.append("")
@@ -63,16 +106,19 @@ def _standard_block(std: Standard) -> str:
 def _rules_locations(std: Standard, major: int) -> list[str]:
     """Routes for one major line's rules revisions, most specific first.
 
-    Three shapes, and the order between them is the contract:
+    Four shapes, and the order between them is the contract:
 
-    1. `410` for a withdrawn revision, so it wins over both of the others. Without it the
-       serve rule below would keep answering 200 from files that are still on disk, because
-       withdrawing a publication does not delete what it published.
-    2. The `latest` pointer, a redirect to the newest published-and-served revision. It is
+    1. `410` for a withdrawn revision, so it wins over everything below. Without it the serve
+       rule would keep answering 200 from files that are still on disk, because withdrawing a
+       publication does not delete what it published.
+    2. A draft revision's own directory, so that its short cache wins over the shared serve
+       rule beneath it. Same reasoning as a draft release, and reachable the same way: a
+       revision may follow a branch while its rules are still settling.
+    3. The `latest` pointer, a redirect to the newest published-and-served revision. It is
        generated rather than being a directory in the document root, which is what keeps the
        store write-once: nothing is ever rewritten in place to make `latest` mean something
        new.
-    3. The revisions themselves. This exists only because the pin-to-latest regex would
+    4. The revisions themselves. This exists only because the pin-to-latest regex would
        otherwise claim them; it restates what `location /` in the base config already does,
        including the trailing-slash rewrite that stops a directory URI redirecting to itself.
     """
@@ -86,6 +132,14 @@ def _rules_locations(std: Standard, major: int) -> list[str]:
     for rule_set in rules:
         if not rule_set.is_served:
             lines.append(f'location ~ "^{prefix}/{rule_set.revision}(/.*)?$" {{ return 410; }}')
+
+    for rule_set in rules:
+        if rule_set.is_mutable and rule_set.is_served:
+            lines += _mutable_location(
+                f"^{prefix}/{rule_set.revision}/",
+                f"rules revision {rule_set.revision} is a draft: its bytes still follow a "
+                f"branch, so they may not be cached as immutable",
+            )
 
     current = std.latest_rules(major)
     if current:

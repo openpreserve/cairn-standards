@@ -67,13 +67,21 @@ def _standard() -> Standard:
                 lifecycle=Lifecycle.PUBLISHED,
                 ref="v1.0.0",
                 artifacts=[Artifact(name="demo.xsd", role="schema", from_="repo", path="demo.xsd")],
-            )
+            ),
+            # A draft, which has the same URL shape as the frozen release above and must not be
+            # cached the same way: its bytes are re-fetched from a branch every cycle.
+            Release(
+                version="1.1.0",
+                lifecycle=Lifecycle.DRAFT,
+                artifacts=[Artifact(name="demo.xsd", role="schema", from_="repo", path="demo.xsd")],
+            ),
         ],
         rules=[
             RuleSet(revision="2026-07", applies_to=1, lifecycle=Lifecycle.PUBLISHED,
                     ref="RULES-2026-07", artifacts=rules),
             RuleSet(revision="2026-09", applies_to=1, lifecycle=Lifecycle.PUBLISHED,
                     ref="RULES-2026-09", served=False, artifacts=rules),
+            RuleSet(revision="2026-11", applies_to=1, lifecycle=Lifecycle.DRAFT, artifacts=rules),
         ],
     )
 
@@ -87,7 +95,12 @@ def _write_site(root: Path) -> None:
     (release / "provenance.json").write_text(json.dumps({"standard": "demo"}), encoding="utf-8")
     (release / "SHA256SUMS").write_text("0  demo.xsd\n", encoding="utf-8")
 
-    for revision in ("2026-07", "2026-09"):
+    draft = root / "demo" / "v1.1.0"
+    draft.mkdir(parents=True)
+    (draft / "index.html").write_text("<html><body>draft release</body></html>", encoding="utf-8")
+    (draft / "demo.xsd").write_text('<?xml version="1.0"?><schema/>', encoding="utf-8")
+
+    for revision in ("2026-07", "2026-09", "2026-11"):
         rules = root / "demo" / "v1" / "schematron" / revision
         rules.mkdir(parents=True)
         (rules / "index.html").write_text("<html><body>rules</body></html>", encoding="utf-8")
@@ -322,3 +335,60 @@ def test_the_release_track_still_pins_to_latest_around_the_rules(client):
     resp = client.get("/demo/v1/demo.xsd")
     assert resp.status_code == 303
     assert resp.headers["location"] == "/demo/v1.0.0/demo.xsd"
+
+
+# --- drafts have the shape of a frozen publication and must not be cached like one ----------
+
+@pytest.mark.parametrize(
+    "path",
+    ["/demo/v1.1.0/demo.xsd", "/demo/v1/schematron/2026-11/demo.sch"],
+    ids=["draft-release", "draft-rules-revision"],
+)
+def test_a_draft_is_never_cached_as_immutable(client, path):
+    """The bug this pair exists to hold closed.
+
+    A draft is re-fetched from a branch on every cycle, and nginx decides cacheability from the
+    URL alone - where a draft is indistinguishable from a frozen release. Every draft file was
+    therefore handed out with `immutable, max-age=31536000`, and a client that has cached one
+    never asks again, so the correction a draft exists to allow could never reach it.
+    """
+    resp = client.get(path)
+    assert resp.status_code == 200, resp.status_code
+    assert "immutable" not in resp.headers["cache-control"], resp.headers["cache-control"]
+    assert "max-age=300" in resp.headers["cache-control"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/demo/v1.1.0/demo.xsd", "/demo/v1/schematron/2026-11/demo.sch"],
+    ids=["draft-release", "draft-rules-revision"],
+)
+def test_a_draft_keeps_every_other_header(client, path):
+    """The reason the draft rule sets a variable instead of restating `Cache-Control`.
+
+    An `add_header` inside a location replaces the whole inherited set, so writing the cache
+    header there would have silently dropped CORS and `nosniff` from exactly these URLs - and
+    nothing would have reported it, because the response still arrives.
+    """
+    resp = client.get(path)
+    assert resp.headers["access-control-allow-origin"] == "*"
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["content-type"].startswith("application/xml")
+
+
+@pytest.mark.parametrize(
+    "path", ["/demo/v1.1.0", "/demo/v1.1.0/", "/demo/v1.1.0/index.html"]
+)
+def test_a_draft_page_resolves_without_redirecting(client, path):
+    """Marking a directory mutable takes over content handling for it, so the serving rules
+    have to be restated - and a restatement that forgot the trailing-slash rewrite would answer
+    a directory URI with a relative redirect to itself."""
+    resp = client.get(path)
+    assert resp.status_code == 200, f"{path} answered {resp.status_code} -> {resp.headers.get('location')}"
+    assert "location" not in resp.headers
+
+
+def test_a_frozen_publication_beside_a_draft_is_still_immutable(client):
+    """The other direction: the draft rule must not leak onto its neighbours."""
+    assert "immutable" in client.get("/demo/v1.0.0/demo.xsd").headers["cache-control"]
+    assert "immutable" in client.get("/demo/v1/schematron/2026-07/demo.sch").headers["cache-control"]

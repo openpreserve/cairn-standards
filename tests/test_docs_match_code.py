@@ -39,7 +39,11 @@ ROOT = find_root(Path(__file__).resolve().parent)
 SOURCES = sorted((ROOT / "src" / "cairn").glob("*.py"))
 REGISTRY = ROOT / "src" / "cairn" / "markers.py"
 SYNC_LOOP = ROOT / "deploy" / "sync-loop.sh"
-RUNBOOKS = [ROOT / "docs" / "concepts-and-gotchas.md", ROOT / "docs" / "README.md", ROOT / "README.md"]
+# Every document a reader could reasonably be in when they meet a marker or an exit code.
+# Globbed rather than listed, because the checks below are about whether a fact is written down
+# somewhere a person will find it, not about which file holds it - and a doc set that cannot be
+# reorganised without a test edit is one that stops being reorganised.
+RUNBOOKS = sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md", ROOT / "CONTRIBUTING.md"]
 
 MARKERS = {m.value for m in Marker}
 
@@ -92,6 +96,12 @@ def _runbook_text() -> str:
     return "\n".join(p.read_text(encoding="utf-8") for p in RUNBOOKS)
 
 
+def _exit_code_row(code: int) -> str | None:
+    """The documented meaning of one exit code, from wherever the doc set states it."""
+    match = re.search(rf"^\| {code} \| (.+)\|$", _runbook_text(), re.MULTILINE)
+    return match.group(1) if match else None
+
+
 @pytest.mark.parametrize("marker", sorted(MARKERS))
 def test_every_marker_is_documented(marker):
     """Every marker cairn can print is one an operator may have to act on.
@@ -99,8 +109,8 @@ def test_every_marker_is_documented(marker):
     Parametrised rather than aggregated so a failure names the marker rather than a list.
     """
     assert marker in _runbook_text(), (
-        f"{marker!r} can reach a deployment log with no runbook entry. "
-        f"Add it to docs/concepts-and-gotchas.md under 'When a cycle fails'."
+        f"{marker!r} can reach a deployment log with no entry in any document. "
+        f"Add it to the operator reference, which is where people are sent to look one up."
     )
 
 
@@ -187,11 +197,10 @@ def test_the_exit_code_table_describes_the_unit_the_code_counts():
     """
     counter = next(f.name for f in dataclasses.fields(SyncStats) if f.name.endswith("_failed"))
     unit = counter.removesuffix("s_failed")
-    table = (ROOT / "docs" / "concepts-and-gotchas.md").read_text(encoding="utf-8")
-    row = re.search(rf"^\| {cli.EXIT_NOTHING_SUCCEEDED} \| (.+)\|$", table, re.MULTILINE)
+    row = _exit_code_row(cli.EXIT_NOTHING_SUCCEEDED)
     assert row, "exit code 5 has no row"
-    assert unit in row.group(1), (
-        f"the row for 5 says {row.group(1)!r}; nothing_succeeded counts {unit}s, not standards"
+    assert unit in row, (
+        f"the row for 5 says {row!r}; nothing_succeeded counts {unit}s, not standards"
     )
 
 
@@ -227,9 +236,9 @@ def _cache_map() -> list[str]:
     """The `$cairn_cache` map's own lines, so a comment mentioning a path cannot be read as a
     rule about it."""
     conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(conf) if "map $uri $cairn_cache" in line)
+    start = next(i for i, line in enumerate(conf) if line.strip().endswith("$cairn_cache {"))
     end = next(i for i, line in enumerate(conf[start:], start) if line.strip() == "}")
-    return conf[start:end]
+    return conf[start:end]  # the `map ... {` line included, so its source variable is readable
 
 
 @pytest.mark.parametrize(
@@ -247,6 +256,35 @@ def test_every_frozen_url_shape_is_cached_as_immutable(shape):
     assert any(shape in line and "immutable" in line for line in _cache_map()), (
         f"no immutable cache entry matches {shape}"
     )
+
+
+def test_the_draft_marker_the_routes_set_is_the_one_the_cache_map_reads():
+    """Two halves of one decision, in two files that cannot import each other.
+
+    `cairn build` generates `set $cairn_mutable mutable;` for every draft; `deploy/nginx.conf`
+    keys its cache map on that variable. Rename it on either side and nothing fails loudly:
+    nginx starts, every URL still answers, and drafts quietly go back to being cached for a
+    year - the exact failure this pair was introduced to end.
+    """
+    from cairn.manifest import Artifact, Lifecycle, MajorLine, Release, Source, Standard, Steward
+    from cairn.nginx import render_routes
+
+    draft = Standard(
+        id="demo", title="Demo", summary="s", steward=Steward(org="x"),
+        source=Source(type="github", repo="o/r", ref="main"),
+        major_lines=[MajorLine(major=1, latest="1.0.0")],
+        releases=[Release(version="1.0.0", lifecycle=Lifecycle.DRAFT, artifacts=[
+            Artifact(name="demo.xsd", role="schema", from_="repo", path="demo.xsd")])],
+    )
+    generated = re.findall(r"set (\$[a-z_]+) ", render_routes([draft]))
+    assert generated, "no draft is marked at all; every draft would be cached as immutable"
+
+    source = next(line for line in _cache_map() if line.strip().endswith("$cairn_cache {"))
+    for variable in set(generated):
+        assert variable in source, (
+            f"the routes set {variable}, but the cache map keys on {source.strip()!r}. "
+            f"A draft would be cached as if it were frozen."
+        )
 
 
 def test_the_moving_rules_pointer_is_matched_before_the_immutable_rules_rule():
@@ -274,9 +312,8 @@ def test_the_moving_rules_pointer_is_matched_before_the_immutable_rules_rule():
 def test_every_exit_code_has_a_documented_row(code):
     """The contract lives in three places. Two are pinned to each other by a test in
     test_cli.py; this pins the third, which had already drifted by one row."""
-    table = (ROOT / "docs" / "concepts-and-gotchas.md").read_text(encoding="utf-8")
-    assert re.search(rf"^\| {code} \| .+\|$", table, re.MULTILINE), (
-        f"exit code {code} is returned by cairn but has no row in the exit-code table"
+    assert _exit_code_row(code), (
+        f"exit code {code} is returned by cairn but has no row in any exit-code table"
     )
 
 
@@ -342,8 +379,7 @@ def test_the_docs_agree_with_the_exit_code_a_publication_actually_returns():
         f"build stage both assume it does not"
     )
 
-    for doc in ("concepts-and-gotchas.md", "promoting-a-draft-release.md"):
-        text = (ROOT / "docs" / doc).read_text(encoding="utf-8")
-        for line in text.splitlines():
+    for doc in RUNBOOKS:
+        for line in doc.read_text(encoding="utf-8").splitlines():
             if "VERSION PUBLISHED" in line and "exit" in line:
-                assert f"exits {EXIT_ATTENTION}" not in line, f"{doc}: {line.strip()}"
+                assert f"exits {EXIT_ATTENTION}" not in line, f"{doc.name}: {line.strip()}"

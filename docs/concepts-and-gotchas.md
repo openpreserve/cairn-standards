@@ -250,13 +250,15 @@ redirects, or which revision `schematron/latest` resolves to) propagates to clie
 about five minutes, while a concrete versioned file can be cached for a year. That is safe
 precisely because concrete files are write-once, so their bytes never change.
 
-The caveat is what this cannot see. nginx assigns the header by URL *shape*, and a `draft`
-release or revision has the same shape as a frozen one while its bytes still follow a branch,
-so its files are handed out with a year-long immutable cache too. That is why nothing in
-`draft` should be advertised or cited: the badge on the page says `draft`, but a client that
-has already cached the file will never ask again. It is also why `schematron/latest` resolves
-only to a *published* revision - being derived by sorting rather than chosen by a person, it
-would otherwise swing onto a draft on its own. All of these are served with `Access-Control-Allow-Origin: *` and
+Shape alone is not quite enough to decide that, because a `draft` release or revision has the
+same shape as a frozen one while its bytes still follow a branch. So `cairn build` generates an
+explicit rule for each draft, and the cache map is keyed on that rule's marker as well as on
+the URL: a draft is served at 300s, like the pointers.
+
+That does not make a draft an address to hand out. Its bytes change under it, which is what the
+`draft` badge on the page is telling you. It is also why `schematron/latest` resolves only to a
+*published* revision: being derived by sorting rather than chosen by a person, it would
+otherwise swing onto a draft on its own. All of these are served with `Access-Control-Allow-Origin: *` and
 `X-Content-Type-Options: nosniff`, and `OPTIONS` requests short-circuit to `204`.
 
 ## Deployment: what updates on its own, and what does not
