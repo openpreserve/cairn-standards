@@ -21,6 +21,7 @@ still escape.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import re
 from pathlib import Path
 
@@ -29,8 +30,10 @@ import pytest
 from cairn import cli
 from cairn.config import find_root
 from cairn.markers import Marker
+from cairn.sync import SyncStats
 from cairn.config import RELEASE_PAGE_NAME
 from cairn.config import GENERATED_NAMES
+from cairn.config import LATEST_SEGMENT, RULES_SEGMENT
 
 ROOT = find_root(Path(__file__).resolve().parent)
 SOURCES = sorted((ROOT / "src" / "cairn").glob("*.py"))
@@ -173,20 +176,27 @@ def test_the_shell_loop_only_logs_registered_markers():
 
 def test_the_exit_code_table_describes_the_unit_the_code_counts():
     """Code 5 means the run established nothing, and what "nothing" is counted in moved from
-    standards to releases when a failing release stopped abandoning its siblings. The table,
-    the constant's comment and the shell loop all went on saying "every standard failed", which
-    is now false for a standard with one bad release and two good ones - the drift this module
-    exists to catch, in the row it is most expensive to misread."""
+    standards to releases when a failing release stopped abandoning its siblings, then to
+    publications when rules revisions joined the same pass. The table, the constant's comment
+    and the shell loop all went on saying "every standard failed", which is now false for a
+    standard with one bad release and two good ones - the drift this module exists to catch, in
+    the row it is most expensive to misread.
+
+    The word is read off the counter rather than written here, so renaming the counter without
+    touching the table fails instead of quietly re-introducing the drift.
+    """
+    counter = next(f.name for f in dataclasses.fields(SyncStats) if f.name.endswith("_failed"))
+    unit = counter.removesuffix("s_failed")
     table = (ROOT / "docs" / "concepts-and-gotchas.md").read_text(encoding="utf-8")
     row = re.search(rf"^\| {cli.EXIT_NOTHING_SUCCEEDED} \| (.+)\|$", table, re.MULTILINE)
     assert row, "exit code 5 has no row"
-    assert "release" in row.group(1), (
-        f"the row for 5 says {row.group(1)!r}; nothing_succeeded counts releases, not standards"
+    assert unit in row.group(1), (
+        f"the row for 5 says {row.group(1)!r}; nothing_succeeded counts {unit}s, not standards"
     )
 
 
-def test_the_cache_map_knows_every_generated_file_in_a_release_directory():
-    """nginx.conf decides which files under a version URL may be cached for a year.
+def test_the_cache_map_knows_every_generated_file_in_a_publication_directory():
+    """nginx.conf decides which files under a publication URL may be cached for a year.
 
     A release directory holds write-once artifacts, which are immutable and should be, beside
     files the sync and the render rewrite - so the cache map names the second group to keep
@@ -195,16 +205,65 @@ def test_the_cache_map_knows_every_generated_file_in_a_release_directory():
     constant - the change it exists to make safe - would drop the release page into the
     `immutable` arm one line below: a year-long, unrecallable cache on a page re-rendered
     whenever a template changes.
+
+    Every such group, not the first one found. A rules revision directory holds the same three
+    generated files under a differently-shaped URL and therefore needs its own entry; checking
+    only the first match would have let that second copy list something else entirely while
+    this test kept reporting on the release one.
     """
     conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
-    short_lived = re.search(r"\(([^)]*)\)\?\$", conf)
-    assert short_lived, "the cache map no longer has a group naming the re-rendered files"
-    named = set(short_lived.group(1).replace("\\", "").split("|"))
-    assert named == set(GENERATED_NAMES), (
-        f"nginx.conf caches {sorted(named)} as short-lived, but the sync treats "
-        f"{sorted(GENERATED_NAMES)} as generated. A file in one list and not the other is "
-        f"either cached for a year by mistake or reaped by mistake."
+    groups = re.findall(r"\(([^)]*)\)\?\$", conf)
+    assert groups, "the cache map no longer has a group naming the re-rendered files"
+    for group in groups:
+        named = set(group.replace("\\", "").split("|"))
+        assert named == set(GENERATED_NAMES), (
+            f"nginx.conf caches {sorted(named)} as short-lived, but the sync treats "
+            f"{sorted(GENERATED_NAMES)} as generated. A file in one list and not the other is "
+            f"either cached for a year by mistake or reaped by mistake."
+        )
+
+
+def _cache_map() -> list[str]:
+    """The `$cairn_cache` map's own lines, so a comment mentioning a path cannot be read as a
+    rule about it."""
+    conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(conf) if "map $uri $cairn_cache" in line)
+    end = next(i for i, line in enumerate(conf[start:], start) if line.strip() == "}")
+    return conf[start:end]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [r"v[0-9]+\.[0-9]+\.[0-9]+/", rf"v[0-9]+/{RULES_SEGMENT}/[^/]+/"],
+    ids=["release", "rules-revision"],
+)
+def test_every_frozen_url_shape_is_cached_as_immutable(shape):
+    """A shape with no immutable arm serves permanent bytes as if they might change.
+
+    The rules paths carry a bare major (`v4`), not a dotted version, so they match neither of
+    the release entries and would silently take the 300s default - correct, but wrong about
+    what it is describing, and it costs a fetch of every rules file on every request.
+    """
+    assert any(shape in line and "immutable" in line for line in _cache_map()), (
+        f"no immutable cache entry matches {shape}"
     )
+
+
+def test_the_moving_rules_pointer_is_matched_before_the_immutable_rules_rule():
+    """`latest` sits at the same depth as a revision, so the immutable rule matches it too.
+
+    nginx takes the first map entry that matches, so ordering is the whole guard. Below the
+    immutable rule, the pointer every citation is told to use would be cached for a year, which
+    pins each reader to whichever revision was current the first time they asked - and there is
+    no way to recall it.
+    """
+    lines = _cache_map()
+    pointer = next(i for i, line in enumerate(lines) if f"{RULES_SEGMENT}/{LATEST_SEGMENT}" in line)
+    frozen = next(
+        i for i, line in enumerate(lines)
+        if rf"v[0-9]+/{RULES_SEGMENT}/[^/]+/" in line and "immutable" in line
+    )
+    assert pointer < frozen, "the immutable rules rule is matched before the latest pointer"
 
 
 @pytest.mark.parametrize(

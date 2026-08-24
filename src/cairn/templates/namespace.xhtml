@@ -56,6 +56,44 @@
     <p class="note">Links above use the major-line path <code>/{{ std.id }}/v{{ major }}/…</code>,
       which always resolves to the latest v{{ major }} release. To pin an exact version, use
       <code>/{{ std.id }}/v{{ latest.version }}/…</code>.</p>
+    {% if rules_ctx %}
+    <h2>Validation rules</h2>
+    <p>These are published on their own track. A schema version is frozen forever once
+      published; a rules revision has its own number and its own dates and can be revised
+      without any schema version moving. Every revision below stays available permanently.</p>
+    {% if current_rules %}
+    <p>The current revision is
+      <a href="/{{ std.id }}/{{ current_rules.slug }}">{{ current_rules.revision }}</a>. To follow
+      whichever is current, use
+      <code>/{{ std.id }}/v{{ major }}/{{ rules_segment }}/{{ latest_segment }}/…</code>.</p>
+    {% endif %}
+    <table class="files">
+      <thead><tr><th>Revision</th><th>Rules</th><th>Tested against</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for ctx in rules_ctx %}
+        {% set rules = ctx.publication %}
+        <tr>
+          <td><a href="/{{ std.id }}/{{ rules.slug }}">{{ rules.revision }}</a>
+            {% if rules.released %}<div class="note">{{ rules.released }}</div>{% endif %}</td>
+          <td>
+            {% for a in ctx.artifacts %}
+            <rddl:resource xlink:type="simple"
+                           xlink:role="{{ rddl_nature(a.role) }}"
+                           xlink:arcrole="{{ rddl_purpose(a.role) }}"
+                           xlink:href="{{ a.url }}"
+                           xlink:title="{{ a.title }}">
+              <a href="{{ a.url }}"><code>{{ a.name }}</code></a>
+            </rddl:resource>
+            {% endfor %}
+          </td>
+          <td>{% if rules.tested_against %}<a href="/{{ std.id }}/v{{ rules.tested_against }}">v{{ rules.tested_against }}</a>{% else %}-{% endif %}
+            {% if rules.minimum_version %}<div class="note">v{{ rules.minimum_version }} and later</div>{% endif %}</td>
+          <td><span class="badge {{ rules.label }}">{{ rules.label }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
   </div></main>
   {% include "_opf_footer.html" %}
 </body>

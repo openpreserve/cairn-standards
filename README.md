@@ -34,24 +34,34 @@ For a standard `eaf`, major line `v1`, latest release `v1.0.0`:
 | `/eaf/v1/eaf.xsd` | `303` → the latest concrete `v1.x.y` file (pin-to-latest-minor) |
 | `/eaf/v1.0.0` | Landing page for that exact release (downloads + checksums + provenance) |
 | `/eaf/v1.0.0/eaf.xsd` | The actual schema file - `application/xml`, immutable cache, CORS `*` |
+| `/eaf/v1/schematron/2026-07/eaf.sch` | One dated revision of the validation rules - frozen permanently |
+| `/eaf/v1/schematron/latest/eaf.sch` | `303` → the newest frozen revision of those rules |
 
 **Namespace = major version only** (`/eaf/v1`). Minor/patch numbers never appear in a namespace,
 so a minor release never forces a namespace change. The exact version lives in the schema's
 `schema-version` attribute and in the concrete `/vX.Y.Z/` release folders.
+
+**Schemas and rules are two tracks.** A schema version is frozen for ever once published;
+Schematron rules are revised on their own cadence, so they are published beside the versions
+rather than inside them, dated and attached to the major line the `.sch` itself declares.
+Revising the rules never moves a schema version, and old revisions never disappear. See
+[docs/publishing-a-rules-revision.md](docs/publishing-a-rules-revision.md).
 
 ## How it works
 
 The registry is a set of YAML manifests. Three commands turn them into a served site:
 
 ```text
-  standards/<id>/standard.yaml    the registry: identity, upstream source, releases, artifacts
+  standards/<id>/standard.yaml    the registry: identity, upstream source, releases,
+                                 rules revisions, artifacts
 
   1. cairn validate      check every manifest against schemas/standard.schema.json
                          (--baseline <checkout> also refuses edits that would break a
                           URL already published, which is what CI runs on a PR)
   2. cairn sync          fetch artifacts, verify SHA-256, record provenance, freeze
-                         (writes the write-once replica to site/<id>/vX.Y.Z/;
-                          --verify re-checks frozen versions against upstream)
+                         (writes the write-once replica to site/<id>/vX.Y.Z/ and
+                          site/<id>/vN/schematron/<revision>/;
+                          --verify re-checks frozen bytes against upstream)
   3. cairn build         render landing pages, RDDL, catalog.json, sitemap, nginx routes
                          (writes site/ and build/nginx/cairn-routes.conf)
 

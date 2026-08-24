@@ -12,8 +12,8 @@ import markdown as md
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from . import BASE_URL, __version__
-from .config import PROVENANCE_NAME, RELEASE_PAGE_NAME, site_dir
-from .manifest import ManifestError, Release, Standard
+from .config import LATEST_SEGMENT, PROVENANCE_NAME, RELEASE_PAGE_NAME, RULES_SEGMENT, site_dir
+from .manifest import ManifestError, Publication, Standard
 from .nginx import write_routes
 from .util import DecodeError, atomic_write, is_provenance_record_set, reap_temp_tree, read_text
 
@@ -149,8 +149,8 @@ def _github_link(source: dict | None) -> str | None:
     return url or None
 
 
-def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
-    prov = _load_provenance(site_dir(root) / std.id / f"v{rel.version}")
+def _artifact_views(std: Standard, rel: Publication, root: Path) -> list[dict]:
+    prov = _load_provenance(site_dir(root) / std.id / rel.slug)
     prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
     views = []
     for art in rel.artifacts:
@@ -162,7 +162,7 @@ def _artifact_views(std: Standard, rel: Release, root: Path) -> list[dict]:
                 "name": art.name,
                 "role": art.role,
                 "title": art.title or role_label(art.role),
-                "url": f"/{std.id}/v{rel.version}/{art.name}",
+                "url": f"/{std.id}/{rel.slug}/{art.name}",
                 "media_type": art.content_type(),
                 "bytes": p.get("bytes"),
                 "sha256": p.get("sha256"),
@@ -201,14 +201,27 @@ def _overview_html(std: Standard, log, degraded: list[str]) -> str:
     return md.markdown(src, extensions=["extra", "sane_lists", "toc"])
 
 
-def _release_notes_html(std: Standard, rel: Release, log, degraded: list[str]) -> str | None:
+def _notes_html(std: Standard, rel: Publication, log, degraded: list[str]) -> str | None:
     cd = std.content_dir
-    src = _read_content(cd / f"{rel.version}.md", log, degraded) if cd else None
+    src = _read_content(cd / rel.content_name, log, degraded) if cd else None
     if src:
         return md.markdown(src, extensions=["extra"])
     if rel.notes:
         return md.markdown(rel.notes, extensions=["extra"])
     return None
+
+
+def _publication_ctx(std: Standard, rel: Publication, root: Path, log, degraded: list[str]) -> dict:
+    """Everything a page needs about one release or rules revision, resolved once.
+
+    Keyed on `publication` rather than on `release`, because three templates now consume this
+    and only one of them is showing releases.
+    """
+    return {
+        "publication": rel,
+        "artifacts": _artifact_views(std, rel, root),
+        "notes_html": _notes_html(std, rel, log, degraded),
+    }
 
 
 def _write(path: Path, content: str) -> None:
@@ -264,21 +277,25 @@ def render_site(standards: list[Standard], root: Path, log=print) -> int:
 
     for std in standards:
         # Precompute per-release artifact views (merges manifest + provenance checksums).
-        release_ctx = []
-        for rel in std.sorted_releases():
-            release_ctx.append(
-                {
-                    "release": rel,
-                    "artifacts": _artifact_views(std, rel, root),
-                    "notes_html": _release_notes_html(std, rel, log, degraded),
-                }
-            )
+        release_ctx = [_publication_ctx(std, rel, root, log, degraded) for rel in std.sorted_releases()]
+        # Rules revisions per major line, so a template can show the two tracks side by side
+        # without re-deriving which revision belongs where.
+        rules_ctx = {
+            ml.major: [
+                _publication_ctx(std, rules, root, log, degraded)
+                for rules in std.sorted_rules(ml.major)
+            ]
+            for ml in std.sorted_major_lines()
+        }
 
         # Standard landing page
         _write(
             site / std.id / "index.html",
             env.get_template("standard.html").render(
-                std=std, overview_html=_overview_html(std, log, degraded), release_ctx=release_ctx
+                std=std,
+                overview_html=_overview_html(std, log, degraded),
+                release_ctx=release_ctx,
+                rules_ctx=rules_ctx,
             ),
         )
         log(f"  [page] /{std.id}")
@@ -296,19 +313,43 @@ def render_site(standards: list[Standard], root: Path, log=print) -> int:
                     namespace=std.namespace_for(ml.major),
                     latest=latest,
                     artifacts=_artifact_views(std, latest, root),
+                    rules_ctx=rules_ctx.get(ml.major, []),
+                    current_rules=std.latest_rules(ml.major),
+                    rules_segment=RULES_SEGMENT,
+                    latest_segment=LATEST_SEGMENT,
                 ),
             )
             log(f"  [ns]   /{std.id}/v{ml.major}")
 
         # Concrete release landing pages
         for ctx in release_ctx:
-            rel = ctx["release"]
+            rel = ctx["publication"]
             _write(
-                site / std.id / f"v{rel.version}" / RELEASE_PAGE_NAME,
+                site / std.id / rel.slug / RELEASE_PAGE_NAME,
                 env.get_template("release.html").render(
                     std=std, rel=rel, artifacts=ctx["artifacts"], notes_html=ctx["notes_html"]
                 ),
             )
+
+        # One page per rules revision, beside the bytes it describes
+        for major, revisions in rules_ctx.items():
+            for ctx in revisions:
+                rules = ctx["publication"]
+                _write(
+                    site / std.id / rules.slug / RELEASE_PAGE_NAME,
+                    env.get_template("ruleset.html").render(
+                        std=std,
+                        rules=rules,
+                        artifacts=ctx["artifacts"],
+                        notes_html=ctx["notes_html"],
+                        namespace=std.namespace_for(major),
+                        tested_release=std.release(rules.tested_against) if rules.tested_against else None,
+                        is_current=std.latest_rules(major) is rules,
+                        rules_segment=RULES_SEGMENT,
+                        latest_segment=LATEST_SEGMENT,
+                    ),
+                )
+                log(f"  [page] /{std.id}/{rules.slug}")
 
     # Machine-readable catalog + sitemap + robots + error pages
     _write(site / "catalog.json", _render_catalog(standards, root))
@@ -325,9 +366,25 @@ def render_site(standards: list[Standard], root: Path, log=print) -> int:
     return len(degraded)
 
 
+def _rules_pointer(std: Standard, major: int) -> dict:
+    """The major line's moving rules pointer, or nothing at all if it has no rules.
+
+    Absent rather than null when there are none, so a client cannot read "there is a current
+    rules URL and it is null" - the key's presence is the answer to "does this line publish
+    rules?". The URL it names is a redirect, never a stored document.
+    """
+    current = std.latest_rules(major)
+    if current is None:
+        return {}
+    return {
+        "rules_latest": current.revision,
+        "rules_latest_url": f"{BASE_URL}/{std.id}/v{major}/{RULES_SEGMENT}/{LATEST_SEGMENT}",
+    }
+
+
 def _render_catalog(standards: list[Standard], root: Path) -> str:
     def artifact_json(std, rel):
-        prov = _load_provenance(site_dir(root) / std.id / f"v{rel.version}")
+        prov = _load_provenance(site_dir(root) / std.id / rel.slug)
         prov_arts = {a["name"]: a for a in prov.get("artifacts", [])} if prov else {}
         out = []
         for art in rel.artifacts:
@@ -336,13 +393,35 @@ def _render_catalog(standards: list[Standard], root: Path) -> str:
                 {
                     "name": art.name,
                     "role": art.role,
-                    "url": f"{BASE_URL}/{std.id}/v{rel.version}/{art.name}",
+                    "url": f"{BASE_URL}/{std.id}/{rel.slug}/{art.name}",
                     "media_type": art.content_type(),
                     "sha256": p.get("sha256"),
                     "bytes": p.get("bytes"),
                 }
             )
         return out
+
+    def rules_json(std):
+        """The rules track, ordered newest first within each major line.
+
+        Flat rather than nested under `major_lines`, so a client asking "which rules apply to
+        EAD 4?" filters on one field instead of walking two structures. `applies_to` is the
+        join, and it is the same number the `.sch` file's own namespace declaration implies.
+        """
+        return [
+            {
+                "revision": rules.revision,
+                "applies_to": rules.applies_to,
+                "tested_against": rules.tested_against,
+                "minimum_version": rules.minimum_version,
+                "status": rules.label,
+                "released": rules.released,
+                "url": f"{BASE_URL}/{std.id}/{rules.slug}",
+                "artifacts": artifact_json(std, rules),
+            }
+            for ml in std.sorted_major_lines()
+            for rules in std.sorted_rules(ml.major)
+        ]
 
     catalog = {
         "@context": {"cairn": "https://standards.openpreservation.org/schemas/"},
@@ -366,6 +445,7 @@ def _render_catalog(standards: list[Standard], root: Path) -> str:
                         "namespace": std.namespace_for(ml.major),
                         "latest": ml.latest,
                         "latest_url": f"{BASE_URL}/{std.id}/v{ml.latest}",
+                        **_rules_pointer(std, ml.major),
                     }
                     for ml in std.sorted_major_lines()
                 ],
@@ -374,11 +454,12 @@ def _render_catalog(standards: list[Standard], root: Path) -> str:
                         "version": rel.version,
                         "status": rel.label,
                         "released": rel.released,
-                        "url": f"{BASE_URL}/{std.id}/v{rel.version}",
+                        "url": f"{BASE_URL}/{std.id}/{rel.slug}",
                         "artifacts": artifact_json(std, rel),
                     }
                     for rel in std.sorted_releases()
                 ],
+                "rules": rules_json(std),
             }
             for std in standards
         ],

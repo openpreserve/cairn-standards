@@ -99,6 +99,17 @@ def sha256_hex(data: bytes) -> str:
 # under a URL that can never resolve.
 _SAFE_ARTIFACT_NAME = re.compile(r"\A[A-Za-z0-9_-][A-Za-z0-9._-]*\Z")
 
+# A rules revision label is a dated `YYYY-MM` or `YYYY-MM-DD`, and it is checked here for the
+# same two reasons the artifact name above is. It becomes a path segment that is joined onto
+# the document root and handed to mkdir(), so `..` in it escapes the tree; and the schema's
+# copy of this pattern has to be ECMA-262, where `$` also matches before a trailing newline.
+#
+# Dated rather than free-form so that "newest" is decidable by sorting the labels. The moving
+# `latest` pointer resolves by that order, and a label nobody can order leaves the pointer's
+# target depending on manifest sequence. It also keeps the word `latest` out of the revision
+# space, so a revision can never shadow the pointer that resolves to it.
+_SAFE_REVISION = re.compile(r"\A\d{4}-\d{2}(-\d{2})?\Z")
+
 
 def is_provenance_record_set(data: object) -> bool:
     """Whether *data* is a provenance document the rest of this codebase can index into.

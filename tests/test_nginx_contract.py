@@ -23,7 +23,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cairn.manifest import Lifecycle, Artifact, MajorLine, Release, Source, Standard, Steward
+from cairn.manifest import Lifecycle, Artifact, MajorLine, Release, RuleSet, Source, Standard, Steward
 from cairn.nginx import render_routes
 from cairn.util import TEMP_PREFIX
 
@@ -48,7 +48,12 @@ def _free_port() -> int:
 
 
 def _standard() -> Standard:
-    """One standard, one major line, one release - enough to generate every route shape."""
+    """One standard, one major line, one release and two rules revisions.
+
+    The second revision is withdrawn, which is the case only declaration order gets right: its
+    files are still on disk, because withdrawing does not delete what was published.
+    """
+    rules = [Artifact(name="demo.sch", role="schematron", from_="repo", path="demo.sch")]
     return Standard(
         id="demo",
         title="Demo Standard",
@@ -64,6 +69,12 @@ def _standard() -> Standard:
                 artifacts=[Artifact(name="demo.xsd", role="schema", from_="repo", path="demo.xsd")],
             )
         ],
+        rules=[
+            RuleSet(revision="2026-07", applies_to=1, lifecycle=Lifecycle.PUBLISHED,
+                    ref="RULES-2026-07", artifacts=rules),
+            RuleSet(revision="2026-09", applies_to=1, lifecycle=Lifecycle.PUBLISHED,
+                    ref="RULES-2026-09", served=False, artifacts=rules),
+        ],
     )
 
 
@@ -76,6 +87,14 @@ def _write_site(root: Path) -> None:
     (release / "provenance.json").write_text(json.dumps({"standard": "demo"}), encoding="utf-8")
     (release / "SHA256SUMS").write_text("0  demo.xsd\n", encoding="utf-8")
 
+    for revision in ("2026-07", "2026-09"):
+        rules = root / "demo" / "v1" / "schematron" / revision
+        rules.mkdir(parents=True)
+        (rules / "index.html").write_text("<html><body>rules</body></html>", encoding="utf-8")
+        (rules / "demo.sch").write_text('<?xml version="1.0"?><schema/>', encoding="utf-8")
+        (rules / "provenance.json").write_text(json.dumps({"standard": "demo"}), encoding="utf-8")
+        (rules / "SHA256SUMS").write_text("0  demo.sch\n", encoding="utf-8")
+
     ns = root / "demo" / "_ns"
     ns.mkdir(parents=True)
     (ns / "v1.xhtml").write_text('<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"/>', encoding="utf-8")
@@ -83,6 +102,10 @@ def _write_site(root: Path) -> None:
     (root / "demo" / "index.html").write_text("<html><body>standard</body></html>", encoding="utf-8")
     (root / "index.html").write_text("<html><body>registry</body></html>", encoding="utf-8")
     (root / "404.html").write_text("<html><body>not found</body></html>", encoding="utf-8")
+    # Both error pages, because nginx answers 404 for a 410 whose error_page target is missing.
+    # Without this file a withdrawn publication looks like an unknown URL, which is the one
+    # distinction the 410 exists to make.
+    (root / "410.html").write_text("<html><body>gone</body></html>", encoding="utf-8")
 
     # What a syncer killed between creating a temp file and renaming it leaves behind. It is
     # reaped on the next run, but it must not be reachable in the meantime - and one of these
@@ -223,3 +246,79 @@ def test_stranded_temp_files_are_never_served(client, path):
     cairn's route generator happened to emit, which is not a property a guard may have.
     """
     assert client.get(path).status_code == 404
+
+
+# --- the rules line, whose whole routing depends on nginx's declaration order ----------------
+
+@pytest.mark.parametrize(
+    "path",
+    ["/demo/v1/schematron/2026-07", "/demo/v1/schematron/2026-07/", "/demo/v1/schematron/2026-07/index.html"],
+)
+def test_a_rules_revision_page_resolves_without_redirecting(client, path):
+    """The trap the pin-to-latest redirect sets. `location ~ "^/demo/v1/(.+)$"` matches these
+    and sends them to `/demo/v1.0.0/schematron/...`, which has never existed - so getting this
+    wrong produces a 303 to a 404 rather than an error anyone would see in a log."""
+    resp = client.get(path)
+    assert resp.status_code == 200, f"{path} answered {resp.status_code} -> {resp.headers.get('location')}"
+    assert "location" not in resp.headers
+
+
+def test_a_frozen_rules_file_is_served_immutably_as_xml(client):
+    resp = client.get("/demo/v1/schematron/2026-07/demo.sch")
+    assert resp.status_code == 200
+    assert "immutable" in resp.headers["cache-control"]
+    assert resp.headers["content-type"].startswith("application/xml")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/demo/v1/schematron/2026-07/index.html", "/demo/v1/schematron/2026-07/provenance.json",
+     "/demo/v1/schematron/2026-07/SHA256SUMS"],
+)
+def test_generated_files_beside_the_rules_stay_revalidatable(client, path):
+    assert "immutable" not in client.get(path).headers["cache-control"]
+
+
+def test_the_latest_pointer_redirects_to_the_newest_frozen_revision(client):
+    resp = client.get("/demo/v1/schematron/latest/demo.sch")
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/demo/v1/schematron/2026-07/demo.sch"
+
+
+@pytest.mark.parametrize("path", ["/demo/v1/schematron/latest", "/demo/v1/schematron/latest/"])
+def test_the_bare_latest_pointer_resolves_to_the_revision_page(client, path):
+    """Including the trailing-slash spelling, which no `location =` can match: it goes through
+    the subtree rule's rewrite and back out, and a rewrite that did not terminate would loop
+    inside nginx rather than answering."""
+    resp = client.get(path)
+    assert resp.status_code == 303, resp.status_code
+    assert resp.headers["location"] == "/demo/v1/schematron/2026-07"
+
+
+def test_the_latest_pointer_is_never_cached_as_immutable(client):
+    """It is the URL documentation is told to cite. Cached for a year it would pin every reader
+    to whichever revision was current the day they first asked, with no way to recall it."""
+    resp = client.get("/demo/v1/schematron/latest/demo.sch")
+    assert "immutable" not in resp.headers["cache-control"]
+
+
+def test_a_withdrawn_revision_answers_gone_although_its_files_remain(client):
+    """Withdrawing does not delete what was published, so the bytes are still in the document
+    root. Only the 410 being declared before the serve rule stops them being handed out."""
+    assert client.get("/demo/v1/schematron/2026-09/demo.sch").status_code == 410
+    assert client.get("/demo/v1/schematron/2026-09").status_code == 410
+
+
+def test_a_rules_path_with_no_revision_is_not_found_rather_than_redirected(client):
+    """It must not fall through to the pin-to-latest rule, which would answer a redirect into a
+    version directory that has never held rules."""
+    resp = client.get("/demo/v1/schematron")
+    assert resp.status_code == 404, resp.headers.get("location")
+
+
+def test_the_release_track_still_pins_to_latest_around_the_rules(client):
+    """The rules locations are declared first, so this is the one that could have been shadowed
+    by them rather than the other way round."""
+    resp = client.get("/demo/v1/demo.xsd")
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/demo/v1.0.0/demo.xsd"

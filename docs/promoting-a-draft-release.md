@@ -39,13 +39,17 @@ Take EAD 4.0.0 as the worked example. In `standards/ead/standard.yaml`:
 ```yaml
 releases:
   - version: 4.0.0
-    lifecycle: published    # was: draft
-    maturity: stable        # the badge on the page; no effect on freezing
-    ref: v4.0.0             # REQUIRED once published: the real git tag, never a branch
-    released: 2026-07-31     # optional, good provenance
+    lifecycle: published      # was: draft
+    maturity: stable          # the badge on the page; no effect on freezing
+    ref: EAS-2026-07          # REQUIRED once published: the real upstream tag, never a branch
+    released: "2026-07-31"    # optional, good provenance
     artifacts:
       ...
 ```
+
+Both the tag and the quotes matter. The tag is whatever upstream actually cut, which is rarely
+`v<version>`. The quotes are load-bearing: YAML parses a bare `2026-07-31` as a date object,
+the manifest schema requires a string, and the unquoted form fails validation.
 
 1. **`lifecycle: draft` -> `lifecycle: published`.** This is what makes the release
    write-once, and it is one-way: `cairn validate --baseline` refuses the reverse on a pull
@@ -61,7 +65,8 @@ releases:
 3. **`maturity` is optional and cosmetic.** It sets the badge. It has no effect on freezing
    or serving, so nothing breaks if you leave it out.
 
-`released:` is optional but worth setting for provenance. It uses `YYYY-MM-DD` format.
+`released:` is optional but worth setting for provenance. It uses `YYYY-MM-DD` format, in
+quotes.
 
 ### Watch the per-artifact ref overrides
 
@@ -125,15 +130,20 @@ its pinned ref, which is worth looking into.
 
 ## Reference
 
-- Lifecycle values: `draft`, `published`. Serving: `served: true|false`.
+- Lifecycle values: `draft`, `published`. Serving: `served: true|false`. Both belong to
+  `Publication` (`src/cairn/manifest.py`), the base a release and a rules revision share, so
+  the two cannot drift apart on what freezing means.
 - Maturity labels (display only): `alpha`, `beta`, `stable`, `deprecated`
   (`schemas/standard.schema.json`).
 - Only `lifecycle: draft` is mutable; `published` is write-once and one-way
-  (`src/cairn/manifest.py`, `Lifecycle` and `Release.is_mutable`). Un-serving a release with
-  `served: false` does not un-publish it.
+  (`src/cairn/manifest.py`, `Lifecycle` and `Publication.is_mutable`). Un-serving a release
+  with `served: false` does not un-publish it.
 - Ref precedence (most specific wins): artifact `ref` > release `ref` > `source.ref`. Defined
   once in `artifact_locator` (`src/cairn/manifest.py`) and used by both the fetch and the
   write-once check, so the two cannot disagree.
-- Freezing is checked in the plan phase (`_plan_release` in `src/cairn/sync.py`) before
+- Freezing is checked in the plan phase (`_plan_publication` in `src/cairn/sync.py`) before
   anything is written, and again on pull requests via `cairn validate --baseline`.
+- Everything on this page applies unchanged to a validation-rules revision, which is the other
+  kind of publication cairn freezes. Its own runbook is
+  [Publishing a validation-rules revision](publishing-a-rules-revision.md).
 - General "add or update a standard" guidance is in `CONTRIBUTING.md`.

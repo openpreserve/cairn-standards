@@ -55,11 +55,11 @@ def _states():
         if served is not None and not on_disk:
             continue
         # on_disk=True with served_sha=None is deliberately kept: that is exactly what
-        # _plan_release builds for a file that is present but cannot be read, since
+        # _plan_publication builds for a file that is present but cannot be read, since
         # _served_digest returns None on any OSError. Excluding it left the present-but
         # -unreadable case - EACCES from the 403 this service repairs elsewhere, EIO from the
         # bad sector RESTORE exists for - never fed to the decision at all.
-        # The release-level flags are derived from one another in _plan_release.
+        # The publication-level flags are derived from one another in _plan_publication.
         if promised and (mutable or publishing):
             continue
         yield Evidence(

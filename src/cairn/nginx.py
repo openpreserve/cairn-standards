@@ -2,15 +2,23 @@
 
 The static base config (deploy/nginx.conf) provides MIME types, CORS, caching, content
 negotiation maps, and error pages. This module generates only the parts that depend on the
-manifests: the namespace documents, the pin-to-latest 303 redirects, and 410s for withdrawn
-versions. The result is ``include``-d inside the server block.
+manifests: the namespace documents, the pin-to-latest 303 redirects, the rules-revision
+subtree with its moving `latest` pointer, and 410s for withdrawn publications. The result is
+``include``-d inside the server block.
+
+Order inside a major line's block is load-bearing. nginx tries regex locations in declaration
+order and takes the first that matches, and the pin-to-latest regex matches *everything*
+under `/<id>/vN/`, the rules subtree included - so a rules URL emitted after it is redirected
+to `/<id>/vX.Y.Z/schematron/...`, which nothing serves. This module is the second place in
+the codebase to depend on that property; deploy/nginx.conf carries the first, and both are
+held in place by tests rather than by care.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from .config import nginx_routes_path
+from .config import LATEST_SEGMENT, RELEASE_PAGE_NAME, RULES_SEGMENT, nginx_routes_path
 from .manifest import Standard
 from .util import atomic_write, reap_temp_files
 
@@ -31,6 +39,11 @@ def _standard_block(std: Standard) -> str:
             f"    default_type application/xhtml+xml;",
             f"    try_files /{std.id}/_ns/v{v}.xhtml =404;",
             f"}}",
+        ]
+        # Before the pin-to-latest regex below, which would otherwise swallow every one of
+        # these. See the module docstring.
+        lines += _rules_locations(std, v)
+        lines += [
             # Pin-to-latest: any file requested under the major line redirects to the concrete
             # latest release. Note /{id}/v{major}.y.z/... does NOT match this (no '/' after vN).
             f'location ~ "^/{std.id}/v{v}/(?<cairn_rest>.+)$" {{ return 303 /{std.id}/v{latest}/$cairn_rest; }}',
@@ -45,6 +58,53 @@ def _standard_block(std: Standard) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+def _rules_locations(std: Standard, major: int) -> list[str]:
+    """Routes for one major line's rules revisions, most specific first.
+
+    Three shapes, and the order between them is the contract:
+
+    1. `410` for a withdrawn revision, so it wins over both of the others. Without it the
+       serve rule below would keep answering 200 from files that are still on disk, because
+       withdrawing a publication does not delete what it published.
+    2. The `latest` pointer, a redirect to the newest published-and-served revision. It is
+       generated rather than being a directory in the document root, which is what keeps the
+       store write-once: nothing is ever rewritten in place to make `latest` mean something
+       new.
+    3. The revisions themselves. This exists only because the pin-to-latest regex would
+       otherwise claim them; it restates what `location /` in the base config already does,
+       including the trailing-slash rewrite that stops a directory URI redirecting to itself.
+    """
+    rules = std.sorted_rules(major)
+    if not rules:
+        return []
+
+    prefix = f"/{std.id}/v{major}/{RULES_SEGMENT}"
+    lines: list[str] = []
+
+    for rule_set in rules:
+        if not rule_set.is_served:
+            lines.append(f'location ~ "^{prefix}/{rule_set.revision}(/.*)?$" {{ return 410; }}')
+
+    current = std.latest_rules(major)
+    if current:
+        lines += [
+            f'location = {prefix}/{LATEST_SEGMENT} {{ return 303 {prefix}/{current.revision}; }}',
+            f'location ~ "^{prefix}/{LATEST_SEGMENT}/(?<cairn_rules_rest>.+)$" '
+            f'{{ return 303 {prefix}/{current.revision}/$cairn_rules_rest; }}',
+        ]
+
+    # The whole subtree, the bare `/schematron` segment included, so that a path with no
+    # revision on it answers 404 here rather than being redirected by the pin-to-latest rule
+    # into a version directory that has never held rules.
+    lines += [
+        f'location ~ "^{prefix}(/.*)?$" {{',
+        f"    rewrite ^(.+)/$ $1 last;",
+        f"    try_files $uri $uri/{RELEASE_PAGE_NAME} =404;",
+        f"}}",
+    ]
+    return lines
 
 
 def _schema_name(std: Standard, version: str) -> str:

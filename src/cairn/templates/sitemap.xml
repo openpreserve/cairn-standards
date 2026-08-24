@@ -5,9 +5,12 @@
   <url><loc>{{ base_url }}/{{ std.id }}</loc></url>
   {% for ml in std.sorted_major_lines() %}
   <url><loc>{{ base_url }}/{{ std.id }}/v{{ ml.major }}</loc></url>
+  {% for rules in std.sorted_rules(ml.major) %}
+  <url><loc>{{ base_url }}/{{ std.id }}/{{ rules.slug }}</loc></url>
+  {% endfor %}
   {% endfor %}
   {% for rel in std.sorted_releases() %}
-  <url><loc>{{ base_url }}/{{ std.id }}/v{{ rel.version }}</loc></url>
+  <url><loc>{{ base_url }}/{{ std.id }}/{{ rel.slug }}</loc></url>
   {% endfor %}
   {% endfor %}
 </urlset>

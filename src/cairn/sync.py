@@ -6,9 +6,15 @@ Layout produced under ``site/``::
     site/<id>/v<version>/provenance.json     # source + checksum + fetch metadata
     site/<id>/v<version>/SHA256SUMS          # `sha256sum -c` compatible
 
-A released version is *frozen*: once its provenance is recorded, a later sync will
-skip it (no-op). ``--verify`` re-fetches and fails loudly if the upstream bytes for a
-released version have changed (re-tagging / tampering) - the fix is to cut a new version.
+A rules revision is replicated the same way, under its major line rather than under a
+concrete version::
+
+    site/<id>/v<major>/schematron/<revision>/<artifact>
+
+Both are *publications*: once a publication's provenance is recorded, a later sync will skip
+it (no-op). ``--verify`` re-fetches and fails loudly if the upstream bytes behind a published
+ref have changed (re-tagging / tampering) - the fix is always to publish a new one, never to
+overwrite.
 """
 
 from __future__ import annotations
@@ -24,11 +30,11 @@ from pathlib import Path
 
 import httpx
 
-from .config import GENERATED_NAMES, PROVENANCE_NAME, RELEASE_PAGE_NAME, SUMS_NAME, site_dir
+from .config import GENERATED_NAMES, PROVENANCE_NAME, SUMS_NAME, site_dir
 from .manifest import (
     Lifecycle,
     Artifact,
-    Release,
+    Publication,
     Standard,
     artifact_locator,
 )
@@ -50,8 +56,8 @@ from .util import (
 RAW_BASE = "https://raw.githubusercontent.com"
 API_BASE = "https://api.github.com"
 
-# Written into a release directory by something other than the artifact loop: the render's
-# page for that release, and this module's own metadata. Never candidates for reaping.
+# Written into a publication's directory by something other than the artifact loop: the
+# render's page for it, and this module's own metadata. Never candidates for reaping.
 
 
 class SyncError(Exception):
@@ -59,11 +65,11 @@ class SyncError(Exception):
 
 
 class StandardFailed(SyncError):
-    """One standard's release failures, each already logged where it happened.
+    """One standard's publication failures, each already logged where it happened.
 
-    Carried as its own type so `sync_all` does not log them a second time. Every release that
-    fails logs its own line naming the version and opening with the marker; the standard-level
-    line repeated a single failure verbatim, and for several it printed a summary containing no
+    Carried as its own type so `sync_all` does not log them a second time. Every publication
+    that fails logs its own line naming it and opening with the marker; the standard-level line
+    repeated a single failure verbatim, and for several it printed a summary containing no
     marker at all - in a log an operator is told to alert on marker strings.
     """
 
@@ -98,13 +104,13 @@ def _repo_owner_name(repo: str) -> tuple[str, str]:
     return owner, name
 
 
-def resolve(std: Standard, rel: Release, art: Artifact, client: httpx.Client) -> Resolved:
+def resolve(std: Standard, publication: Publication, art: Artifact, client: httpx.Client) -> Resolved:
     """Turn an artifact declaration into a concrete download URL.
 
     Precedence comes from `artifact_locator` rather than being restated here, so the
     write-once check compares exactly the coordinates this function will fetch from.
     """
-    locator = artifact_locator(std, rel, art)
+    locator = artifact_locator(std, publication, art)
     repo = locator["repo"]
     ref = locator["ref"]
 
@@ -113,7 +119,10 @@ def resolve(std: Standard, rel: Release, art: Artifact, client: httpx.Client) ->
 
     if art.from_ == "repo":
         if not ref:
-            raise SyncError(f"{std.id} {rel.version} {art.name}: no ref (set source.ref, release.ref, or artifact.ref)")
+            raise SyncError(
+                f"{std.id} {publication.slug} {art.name}: no ref "
+                f"(set source.ref, the {publication.noun}'s ref, or artifact.ref)"
+            )
         return Resolved(url=f"{RAW_BASE}/{repo}/{ref}/{art.path}", repo=repo, ref=ref)
 
     if art.from_ == "github-pages":
@@ -121,9 +130,9 @@ def resolve(std: Standard, rel: Release, art: Artifact, client: httpx.Client) ->
         return Resolved(url=f"https://{owner}.github.io/{name}/{art.path}", repo=repo)
 
     if art.from_ == "release-asset":
-        tag = art.release_tag or rel.ref or std.source.ref
+        tag = art.release_tag or publication.ref or std.source.ref
         if not tag:
-            raise SyncError(f"{std.id} {rel.version} {art.name}: release-asset needs a release_tag")
+            raise SyncError(f"{std.id} {publication.slug} {art.name}: release-asset needs a release_tag")
         api = f"{API_BASE}/repos/{repo}/releases/tags/{tag}"
         # Through the same retry as the fetch and the probe. A fork's pull request calls this
         # unauthenticated, so 429 is the expected fault, and it is the first request made -
@@ -132,23 +141,23 @@ def resolve(std: Standard, rel: Release, art: Artifact, client: httpx.Client) ->
             resp = _with_retry(lambda: client.get(api))
         except httpx.HTTPError as exc:
             raise SyncError(
-                f"{std.id} {rel.version} {art.name}: cannot read release {tag} [{_describe(exc)}]"
+                f"{std.id} {publication.slug} {art.name}: cannot read release {tag} [{_describe(exc)}]"
             ) from exc
         if resp.status_code != 200:
-            raise SyncError(f"{std.id} {rel.version} {art.name}: cannot read release {tag} ({resp.status_code})")
+            raise SyncError(f"{std.id} {publication.slug} {art.name}: cannot read release {tag} ({resp.status_code})")
         try:
             assets = resp.json().get("assets", [])
         except Exception:
-            raise SyncError(f"{std.id} {rel.version} {art.name}: GitHub API returned non-JSON for release {tag}")
+            raise SyncError(f"{std.id} {publication.slug} {art.name}: GitHub API returned non-JSON for release {tag}")
         matches = [a for a in assets if a["name"] == art.asset or fnmatch.fnmatch(a["name"], art.asset)]
         if not matches:
             available = ", ".join(a["name"] for a in assets) or "(none)"
-            raise SyncError(f"{std.id} {rel.version} {art.name}: no asset matches '{art.asset}'. Available: {available}")
+            raise SyncError(f"{std.id} {publication.slug} {art.name}: no asset matches '{art.asset}'. Available: {available}")
         if len(matches) > 1:
-            raise SyncError(f"{std.id} {rel.version} {art.name}: '{art.asset}' matched several assets")
+            raise SyncError(f"{std.id} {publication.slug} {art.name}: '{art.asset}' matched several assets")
         return Resolved(url=matches[0]["browser_download_url"], repo=repo, ref=tag)
 
-    raise SyncError(f"{std.id} {rel.version} {art.name}: unknown source type '{art.from_}'")
+    raise SyncError(f"{std.id} {publication.slug} {art.name}: unknown source type '{art.from_}'")
 
 
 def _resolve_commit(repo: str, ref: str, client: httpx.Client) -> str | None:
@@ -295,8 +304,8 @@ class SyncStats:
     verified: int = 0
     skipped: int = 0
     planned: int = 0
-    releases_attempted: int = 0
-    releases_failed: int = 0
+    publications_attempted: int = 0
+    publications_failed: int = 0
     published: int = 0
     repaired: int = 0
     restored: int = 0
@@ -319,11 +328,12 @@ class SyncStats:
         with a problem in it, and a pass where none of it was is not a verification. Only the
         second must withhold the verify stamp.
 
-        The unit is the release, not the standard, because a failing release no longer
-        abandons its siblings. A run that attempted nothing must not report that everything
-        failed, or it would withhold the stamp for a cycle that simply had no work.
+        The unit is the publication - a release or a rules revision - not the standard,
+        because a failing publication no longer abandons its siblings. A run that attempted
+        nothing must not report that everything failed, or it would withhold the stamp for a
+        cycle that simply had no work.
         """
-        return self.releases_attempted > 0 and self.releases_failed == self.releases_attempted
+        return self.publications_attempted > 0 and self.publications_failed == self.publications_attempted
 
 
 
@@ -348,18 +358,18 @@ class PlannedArtifact:
 
 
 @dataclass
-class ReleasePlan:
-    release: Release
+class PublicationPlan:
+    publication: Publication
     vdir: Path
     artifacts: list[PlannedArtifact]
     orphans: list[str]
-    # provenance.json was present but unreadable, and this release was allowed to rebuild it
+    # provenance.json was present but unreadable, and this unit was allowed to rebuild it
     damaged_metadata: bool = False
     # what provenance.json held when the plan was made; None for a first run or a rebuild.
     # Carried rather than re-read, so the commit phase cannot see a different file than the
     # one every decision above was based on.
     prior: dict | None = None
-    # this cycle is the one that publishes the release, so the write-once guards were off
+    # this cycle is the one that publishes the unit, so the write-once guards were off
     publishing: bool = False
     # published but not served: read, not written, including its metadata
     dormant: bool = False
@@ -397,7 +407,7 @@ class Verdict(StrEnum):
 class Evidence:
     """Everything `_decide` is allowed to look at. No filesystem, no network, no manifest.
 
-    Release-level facts come from the plan; artifact-level ones are read once by the caller.
+    Publication-level facts come from the plan; artifact-level ones are read once by the caller.
     Keeping them in one frozen object is what makes the decision reproducible in a test: the
     invariant matrix drives states through the real sync, and this drives the branch directly,
     including combinations the matrix cannot express because its dimensions are release-wide.
@@ -550,15 +560,15 @@ def _orphan_names(
     )
 
 
-def _plan_release(
+def _plan_publication(
     std: Standard,
-    rel: Release,
+    publication: Publication,
     root: Path,
     client: httpx.Client,
     *,
     verify: bool,
     log,
-) -> ReleasePlan:
+) -> PublicationPlan:
     """Resolve, fetch and check a release without writing anything.
 
     Every invariant is asserted here, before the commit phase touches the document root.
@@ -567,8 +577,8 @@ def _plan_release(
     SHA256SUMS, cached immutably, and beyond the reach of the orphan reaper because the
     reaper only considers names the previous provenance recorded.
     """
-    vdir = site_dir(root) / std.id / f"v{rel.version}"
-    mutable = rel.is_mutable
+    vdir = site_dir(root) / std.id / publication.slug
+    mutable = publication.is_mutable
 
     # Damaged provenance on a published frozen release is not a first run. Rebuilding it would
     # adopt whatever upstream serves now, overwrite the published bytes with it, and rewrite
@@ -585,26 +595,26 @@ def _plan_release(
         # restore for a mode this service fixes by itself would be an expensive lie.
         repaired = ensure_published_mode(prov_path) is ModeRepair.REPAIRED
         raise SyncError(
-            f"{Marker.PROVENANCE_UNAVAILABLE}: {std.id} v{rel.version}\n"
+            f"{Marker.PROVENANCE_UNAVAILABLE}: {std.id} {publication.slug}\n"
             f"  {exc}\n"
             + (
                 "  The file's mode has been repaired, so the next cycle should be able to read it.\n"
                 if repaired
-                else "  Nothing about this release can be established until that file can be read.\n"
+                else f"  Nothing about this {publication.noun} can be established until that file can be read.\n"
             )
             + "  Nothing was written, and the next cycle will try again."
         ) from exc
     except ProvenanceUnreadable as exc:
-        if rel.ever_published:
+        if publication.ever_published:
             raise SyncError(
-                f"{Marker.PROVENANCE_UNREADABLE}: {std.id} v{rel.version}\n"
+                f"{Marker.PROVENANCE_UNREADABLE}: {std.id} {publication.slug}\n"
                 f"  {exc}\n"
-                f"  This version is published and frozen, so this file is the only record of what\n"
-                f"  was published. Rebuilding it from upstream would silently adopt whatever is\n"
-                f"  there now. Restore it from a backup, or re-publish the version deliberately\n"
+                f"  This {publication.noun} is published and frozen, so this file is the only record of\n"
+                f"  what was published. Rebuilding it from upstream would silently adopt whatever is\n"
+                f"  there now. Restore it from a backup, or re-publish the {publication.noun} deliberately\n"
                 f"  once the bytes on disk have been confirmed against an independent copy."
             ) from exc
-        log(f"  [FIX]  {std.id} v{rel.version}: provenance unreadable ({exc}); rebuilding from upstream")
+        log(f"  [FIX]  {std.id} {publication.slug}: provenance unreadable ({exc}); rebuilding from upstream")
         damaged_metadata = True
         prior = None
 
@@ -621,13 +631,13 @@ def _plan_release(
     recorded_lifecycle = prior.get("lifecycle") if prior is not None else None
     if prior is not None and recorded_lifecycle not in tuple(Lifecycle):
         raise SyncError(
-            f"{Marker.PROVENANCE_UNREADABLE}: {std.id} v{rel.version}\n"
+            f"{Marker.PROVENANCE_UNREADABLE}: {std.id} {publication.slug}\n"
             f"  the record parsed, but its lifecycle is {recorded_lifecycle!r} rather than one of\n"
             f"  {', '.join(repr(str(m)) for m in Lifecycle)}. Whether this record describes a\n"
             f"  published era decides whether the write-once checks run, and guessing it either\n"
             f"  way is unrecoverable: one adopts whatever upstream serves now, the other freezes\n"
-            f"  the draft that preceded the release. Restore the record from a backup, or confirm\n"
-            f"  the served bytes against an independent copy and re-publish the version.\n"
+            f"  the draft that preceded it. Restore the record from a backup, or confirm the\n"
+            f"  served bytes against an independent copy and re-publish the {publication.noun}.\n"
             f"  Records written before cairn had this field are not migrated: this service has\n"
             f"  never published a version, so its volumes were rebuilt rather than upgraded."
         )
@@ -646,7 +656,7 @@ def _plan_release(
         # No record at all, so the files are the only witness left. Bytes present under a
         # published version mean the record was lost and its artifacts were not; an empty
         # directory means there is nothing here to contradict, and the release is rebuilt.
-        already_published_here = any((vdir / a.name).exists() for a in rel.artifacts)
+        already_published_here = any((vdir / a.name).exists() for a in publication.artifacts)
 
     # A release whose whole directory was lost therefore republishes: nothing here contradicts
     # anything. That is a restoration rather than a silent adoption of drift only because the
@@ -654,7 +664,7 @@ def _plan_release(
     # bytes only if the ref is a tag or a SHA, which nothing here can check - a branch name is
     # not distinguishable from a tag name - so it is a review responsibility, and this is why
     # the cycle is reported rather than silent.
-    publishing_now = rel.ever_published and not already_published_here
+    publishing_now = publication.ever_published and not already_published_here
 
     # The reverse. `cairn validate --baseline` refuses this on a pull request, but the syncer is
     # the last line and every other write-once violation is refused here too: without it, a
@@ -663,9 +673,9 @@ def _plan_release(
     # report a clean cycle.
     if recorded_publication and mutable:
         raise SyncError(
-            f"{Marker.PUBLISHED_VERSION_UNFROZEN}: {std.id} v{rel.version}\n"
-            f"  provenance records this version as published; the manifest now says\n"
-            f"  lifecycle '{rel.lifecycle}'. That un-freezes bytes that have already been handed\n"
+            f"{Marker.PUBLISHED_VERSION_UNFROZEN}: {std.id} {publication.slug}\n"
+            f"  provenance records this {publication.noun} as published; the manifest now says\n"
+            f"  lifecycle '{publication.lifecycle}'. That un-freezes bytes that have already been handed\n"
             f"  out, and the next sync would overwrite them in place. Restore the lifecycle, or\n"
             f"  set served: false to stop serving it without un-publishing it. `cairn validate\n"
             f"  --baseline` catches this on a pull request, before it can reach a deployment."
@@ -675,7 +685,7 @@ def _plan_release(
     # the cycle that publishes it, because on that cycle the manifest is not contradicting a
     # promise, it is making one. Reported all the same, because a publication nobody intended is
     # worth a line in the log, and it happens once per release.
-    frozen_promise = rel.ever_published and not publishing_now
+    frozen_promise = publication.ever_published and not publishing_now
 
     prior_arts = {a["name"]: a for a in prior["artifacts"]} if prior else {}
     commit_cache: dict[tuple[str, str], str | None] = {}
@@ -701,8 +711,8 @@ def _plan_release(
     # sync fetched a withdrawn release that the CI gate had skipped. Publishing an un-served
     # release writes nothing and loses nothing: restoring service ends dormancy, and that cycle
     # takes the ordinary published path and fetches at the pinned ref.
-    if rel.ever_published and not rel.served:
-        return ReleasePlan(rel, vdir, [], [], damaged_metadata, prior, publishing_now, dormant=True)
+    if publication.ever_published and not publication.served:
+        return PublicationPlan(publication, vdir, [], [], damaged_metadata, prior, publishing_now, dormant=True)
 
     # Checked before the artifact loop so that the precise refusal wins: a manifest that drops
     # one artifact and adds another would otherwise be refused for the replacement, which is
@@ -710,7 +720,7 @@ def _plan_release(
     #
     # Dormant releases are not reaped: "left alone" has to mean the whole directory, or
     # un-serving a release would quietly delete artifacts it is still promising.
-    current_names = {art.name for art in rel.artifacts}
+    current_names = {art.name for art in publication.artifacts}
     # `not frozen_promise`: scanning the directory of a published release turns any stray
     # file an operator left there into a FROZEN VERSION LOST AN ARTIFACT naming something
     # that was never in the manifest, and telling them to restore an artifact entry for it.
@@ -721,18 +731,18 @@ def _plan_release(
     # unpublishes the whole release deliberately and already answers 410.
     if orphans and frozen_promise:
         raise SyncError(
-            f"{Marker.FROZEN_VERSION_LOST_AN_ARTIFACT}: {std.id} v{rel.version}\n"
+            f"{Marker.FROZEN_VERSION_LOST_AN_ARTIFACT}: {std.id} {publication.slug}\n"
             f"  no longer in the manifest: {', '.join(orphans)}\n"
-            f"  lifecycle is '{rel.lifecycle}', so these URLs are published and must keep resolving.\n"
-            f"  Restore the artifact entries, or publish the change as a new version.\n"
+            f"  lifecycle is '{publication.lifecycle}', so these URLs are published and must keep resolving.\n"
+            f"  Restore the artifact entries, or publish the change as a new {publication.noun}.\n"
             f"  `cairn validate --baseline` catches this on a pull request, before it reaches\n"
             f"  a deployment; if it has already been deployed, restoring the entries is the\n"
             f"  only fix that keeps the published URLs working."
         )
 
     planned: list[PlannedArtifact] = []
-    for art in rel.artifacts:
-        resolved = resolve(std, rel, art, client)
+    for art in publication.artifacts:
+        resolved = resolve(std, publication, art, client)
         dest = vdir / art.name
         frozen = prior_arts.get(art.name)
 
@@ -764,31 +774,31 @@ def _plan_release(
 
         if verdict is Verdict.REFUSE_CHANGED:
             raise SyncError(
-                f"{Marker.FROZEN_VERSION_CHANGED}: {std.id} v{rel.version}/{art.name}\n"
+                f"{Marker.FROZEN_VERSION_CHANGED}: {std.id} {publication.slug}/{art.name}\n"
                 f"  recorded sha256 {evidence.recorded_sha}\n"
                 f"  upstream sha256 {digest}\n"
-                f"  A released version's bytes must never change. Cut a new version instead."
+                f"  A published {publication.noun}'s bytes must never change. Publish a new one instead."
             )
         if verdict is Verdict.REFUSE_REPOINTED:
             raise SyncError(
-                f"{Marker.FROZEN_VERSION_REPOINTED}: {std.id} v{rel.version}/{art.name}\n"
+                f"{Marker.FROZEN_VERSION_REPOINTED}: {std.id} {publication.slug}/{art.name}\n"
                 f"  recorded source {frozen['source'].get('url')}\n"
                 f"  manifest now    {resolved.url}\n"
-                f"  A released version's recorded origin is part of what was published, so it\n"
-                f"  cannot be amended to follow the manifest. Restore the coordinates, or\n"
-                f"  publish the new source as a new version. `cairn validate --baseline` catches\n"
+                f"  A published {publication.noun}'s recorded origin is part of what was published, so\n"
+                f"  it cannot be amended to follow the manifest. Restore the coordinates, or\n"
+                f"  publish the new source as a new one. `cairn validate --baseline` catches\n"
                 f"  this on a pull request, before it can reach a deployment."
             )
         if verdict is Verdict.REFUSE_UNVERIFIABLE:
             raise SyncError(
-                f"{Marker.UNVERIFIABLE_PUBLISHED_FILE}: {std.id} v{rel.version}/{art.name}\n"
+                f"{Marker.UNVERIFIABLE_PUBLISHED_FILE}: {std.id} {publication.slug}/{art.name}\n"
                 f"  on disk  {evidence.served_sha or 'missing, or could not be read'}\n"
                 f"  upstream sha256 {digest}\n"
-                f"  This version is published, but no checksum was ever recorded for it, so\n"
+                f"  This {publication.noun} is published, but no checksum was ever recorded for it, so\n"
                 f"  there is nothing here that can say whether the served copy was lost or\n"
                 f"  changed, or whether upstream has been re-tagged. Writing upstream's bytes\n"
                 f"  would settle that by assumption and destroy the evidence. Confirm against\n"
-                f"  an independent copy, then restore the file or publish a new version."
+                f"  an independent copy, then restore the file or publish a new one."
             )
 
         if verdict is Verdict.SKIP_FROZEN:
@@ -843,16 +853,16 @@ def _plan_release(
     missing = [p.name for p in planned if not p.record.get("sha256")]
     if missing:
         raise SyncError(
-            f"{Marker.NO_CHECKSUM_RECORDED}: {std.id} v{rel.version}\n"
+            f"{Marker.NO_CHECKSUM_RECORDED}: {std.id} {publication.slug}\n"
             f"  {', '.join(missing)}\n"
             f"  SHA256SUMS cannot be written without one, and a record carrying no checksum\n"
             f"  silently disables every later integrity comparison for that file."
         )
 
-    return ReleasePlan(rel, vdir, planned, orphans, damaged_metadata, prior, publishing_now)
+    return PublicationPlan(publication, vdir, planned, orphans, damaged_metadata, prior, publishing_now)
 
 
-def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) -> None:
+def _commit_publication(std: Standard, plan: PublicationPlan, stats: SyncStats, *, log) -> None:
     """Apply a checked plan, counting into the caller's *stats*.
 
     Every failure mode the plan can rule out has been ruled out, but the writes themselves can
@@ -862,14 +872,14 @@ def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) 
     on the volume while the log said nothing - the same discard already fixed one level up,
     left in place one level down.
     """
-    rel = plan.release
+    publication = plan.publication
 
     # Before the mkdir, so that "not written to" includes not being brought into existence.
     # Creating the directory for a withdrawn release whose volume was lost gave the render an
     # empty release directory to fill with an index page, and left `already_published_here` -
     # which reads exactly that - looking at state the dormant path had invented.
     if plan.dormant:
-        _write_release_metadata(std, plan, stats, log=log)
+        _write_publication_metadata(std, plan, stats, log=log)
         return
 
     plan.vdir.mkdir(parents=True, exist_ok=True)
@@ -881,14 +891,14 @@ def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) 
     # `cairn sync` from leaving litter behind for a build that may never come.
     strays = reap_temp_files(plan.vdir)
     if strays:
-        log(f"  [tidy] {std.id} v{rel.version}: removed {strays} stranded temp file(s)")
+        log(f"  [tidy] {std.id} {publication.slug}: removed {strays} stranded temp file(s)")
 
     for item in plan.artifacts:
         if item.action is Action.WRITE:
             atomic_write(item.dest, item.data)
             stats.fetched += 1
             log(
-                f"  [get]  {std.id} v{rel.version}/{item.name} "
+                f"  [get]  {std.id} {publication.slug}/{item.name} "
                 f"({item.record['bytes']} bytes, sha256 {item.record['sha256'][:12]}…)"
             )
             continue
@@ -899,7 +909,7 @@ def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) 
             stats.restored += 1
             what = "was missing from the volume" if lost else (
                 f"did not match its recorded sha256 {item.record['sha256'][:12]}…")
-            log(f"  [FIX]  {std.id} v{rel.version}/{item.name} {what}; restored from upstream")
+            log(f"  [FIX]  {std.id} {publication.slug}/{item.name} {what}; restored from upstream")
             continue
 
         # Nothing is rewritten for these, so a file left unreadable by an earlier bug would
@@ -907,11 +917,11 @@ def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) 
         repair = ensure_published_mode(item.dest)
         if repair is ModeRepair.REPAIRED:
             stats.repaired += 1
-            log(f"  [mode] {std.id} v{rel.version}/{item.name} -> 0644")
+            log(f"  [mode] {std.id} {publication.slug}/{item.name} -> 0644")
         elif repair is ModeRepair.FAILED:
             stats.unreadable += 1
             log(
-                f"  [WARN] {std.id} v{rel.version}/{item.name} is not readable by the web "
+                f"  [WARN] {std.id} {publication.slug}/{item.name} is not readable by the web "
                 f"server and the mode could not be changed; this URL will answer 403"
             )
 
@@ -928,9 +938,9 @@ def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) 
         orphan = plan.vdir / orphan_name
         if orphan.exists():
             orphan.unlink()
-            log(f"  [del]  {std.id} v{rel.version}/{orphan_name}")
+            log(f"  [del]  {std.id} {publication.slug}/{orphan_name}")
 
-    _write_release_metadata(std, plan, stats, log=log)
+    _write_publication_metadata(std, plan, stats, log=log)
 
     # Counted here, after the write it describes, like fetched and restored above it. Counted
     # on entry it reported DAMAGED RECORD(S) REBUILT and the INTEGRITY CHECK FAILED block for a
@@ -941,7 +951,7 @@ def _commit_release(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) 
         stats.recovered += 1
     if plan.publishing:
         stats.published += 1
-        log(f"  [pub]  {std.id} v{rel.version} published; write-once now applies to it")
+        log(f"  [pub]  {std.id} {publication.slug} published; write-once now applies to it")
 
 
 def _keyed_by_name(pairs: list[tuple[str, object]] | None) -> dict | None:
@@ -959,6 +969,22 @@ def _keyed_by_name(pairs: list[tuple[str, object]] | None) -> dict | None:
         return None
     keyed = {name: value for name, value in pairs}
     return keyed if len(keyed) == len(pairs) else None
+
+
+def _record_metadata(document: dict) -> dict:
+    """Everything a provenance record says apart from its artifacts and when it was written.
+
+    Compared field-blind rather than by naming lifecycle and served, because the identity
+    block is not the same shape for both kinds of publication: a rules revision records the
+    revision it is, the major line it applies to and the schema version it was tested against,
+    and none of those existed when this comparison listed its fields by hand. A statement the
+    comparison does not look at is one an edit can change while the file on disk keeps saying
+    the old thing, permanently, since nothing later would ever rewrite it.
+
+    `artifacts` is excluded because it is compared separately, keyed by name so that
+    reordering two entries in a manifest does not rewrite two files that did not change.
+    """
+    return {k: v for k, v in document.items() if k not in ("artifacts", "updated_at")}
 
 
 def _parse_sums(data: bytes | None) -> list[tuple[str, str]] | None:
@@ -983,14 +1009,14 @@ def _parse_sums(data: bytes | None) -> list[tuple[str, str]] | None:
     return pairs
 
 
-def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, *, log) -> None:
+def _write_publication_metadata(std: Standard, plan: PublicationPlan, stats: SyncStats, *, log) -> None:
     """Rewrite provenance.json and SHA256SUMS only when the recorded set actually changed.
 
     These live beside write-once artifacts and are documented as permanent. Rewriting them
     every cycle purely to move `updated_at` churns the mtime of files nothing has changed
     and invalidates their validators for no reason.
     """
-    rel = plan.release
+    publication = plan.publication
     records = plan.records
     prior = plan.prior
     prov_path = plan.vdir / PROVENANCE_NAME
@@ -1019,21 +1045,21 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
             # URLs answer 410. Counted as a damaged record instead, which is what it is.
             stats.recovered += 1
             log(
-                f"  [WARN] {std.id} v{rel.version}: no provenance record, and the release is not\n"
-                f"         served, so it cannot be rebuilt without fetching. Set served: true to\n"
+                f"  [WARN] {std.id} {publication.slug}: no provenance record, and this {publication.noun}\n"
+                f"         is not served, so it cannot be rebuilt without fetching. Set served: true to\n"
                 f"         let the next cycle restore it."
             )
             return
-        if prior.get("served") != rel.served:
-            atomic_write(prov_path, (json.dumps({**prior, "served": rel.served}, indent=2) + "\n").encode())
-            log(f"  [meta] {std.id} v{rel.version}/{PROVENANCE_NAME} (served: {rel.served})")
+        if prior.get("served") != publication.served:
+            atomic_write(prov_path, (json.dumps({**prior, "served": publication.served}, indent=2) + "\n").encode())
+            log(f"  [meta] {std.id} {publication.slug}/{PROVENANCE_NAME} (served: {publication.served})")
         return
 
     provenance = {
         "standard": std.id,
-        "version": rel.version,
-        "lifecycle": str(rel.lifecycle),
-        "served": rel.served,
+        **publication.record_identity(),
+        "lifecycle": str(publication.lifecycle),
+        "served": publication.served,
         "generated_by": "cairn sync",
         "updated_at": _now(),
         "artifacts": records,
@@ -1064,8 +1090,7 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
 
     if (
         prior is not None
-        and prior.get("lifecycle") == rel.lifecycle
-        and prior.get("served") == rel.served
+        and _record_metadata(prior) == _record_metadata(provenance)
         and recorded is not None
         and recorded == _keyed_by_name(entries(records))
         and on_disk_sums is not None
@@ -1080,10 +1105,10 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
             outcome = ensure_published_mode(meta_path)
             if outcome is ModeRepair.FAILED:
                 stats.unreadable += 1
-                log(f"  [WARN] {std.id} v{rel.version}/{meta_path.name} will answer 403; mode not repairable")
+                log(f"  [WARN] {std.id} {publication.slug}/{meta_path.name} will answer 403; mode not repairable")
             elif outcome is ModeRepair.REPAIRED:
                 stats.repaired += 1
-                log(f"  [mode] {std.id} v{rel.version}/{meta_path.name} -> {PUBLISHED_MODE:04o}")
+                log(f"  [mode] {std.id} {publication.slug}/{meta_path.name} -> {PUBLISHED_MODE:04o}")
         return
 
     # SHA256SUMS first, provenance last. provenance.json is what the next run compares
@@ -1091,10 +1116,10 @@ def _write_release_metadata(std: Standard, plan: ReleasePlan, stats: SyncStats, 
     # rather than falsely up to date, and the next cycle rewrites both.
     atomic_write(sums_path, expected_sums)
     atomic_write(prov_path, (json.dumps(provenance, indent=2) + "\n").encode())
-    log(f"  [meta] {std.id} v{rel.version}/{PROVENANCE_NAME}, {SUMS_NAME}")
+    log(f"  [meta] {std.id} {publication.slug}/{PROVENANCE_NAME}, {SUMS_NAME}")
 
 
-def _plan_dry_run(std: Standard, rel: Release, client: httpx.Client, stats: SyncStats, *, log) -> None:
+def _plan_dry_run(std: Standard, publication: Publication, client: httpx.Client, stats: SyncStats, *, log) -> None:
     """Resolve and probe without writing, counting into the caller's stats like every other
     step here. Allocating a throwaway and merging it was a second convention for one job.
 
@@ -1112,15 +1137,15 @@ def _plan_dry_run(std: Standard, rel: Release, client: httpx.Client, stats: Sync
     # because its upstream tag was retired probes UNREACHABLE, so every pull request from then
     # on failed this step, and no manifest edit could fix it because a published release cannot
     # be dropped. The dry run has no volume, so dormancy is read off the manifest alone.
-    if rel.ever_published and not rel.served:
-        log(f"  [plan] {std.id} v{rel.version}: not served, so nothing is probed")
+    if publication.ever_published and not publication.served:
+        log(f"  [plan] {std.id} {publication.slug}: not served, so nothing is probed")
         return
 
     missed = 0
-    for art in rel.artifacts:
-        resolved = resolve(std, rel, art, client)
+    for art in publication.artifacts:
+        resolved = resolve(std, publication, art, client)
         ok = _reachable(resolved.url, client)
-        log(f"  [plan] {std.id} v{rel.version}/{art.name} <- {resolved.url} {'OK' if ok else 'UNREACHABLE'}")
+        log(f"  [plan] {std.id} {publication.slug}/{art.name} <- {resolved.url} {'OK' if ok else 'UNREACHABLE'}")
         stats.planned += 1
         if not ok:
             stats.unreachable += 1
@@ -1128,7 +1153,7 @@ def _plan_dry_run(std: Standard, rel: Release, client: httpx.Client, stats: Sync
 
     if missed:
         raise SyncError(
-            f"{Marker.UPSTREAM_UNREACHABLE}: {std.id} v{rel.version}\n"
+            f"{Marker.UPSTREAM_UNREACHABLE}: {std.id} {publication.slug}\n"
             f"  {missed} artifact(s) could not be reached; see the [plan] lines above.\n"
             f"  A sync would fail on each of them."
         )
@@ -1144,71 +1169,76 @@ def sync_standard(
     log=print,
     stats: SyncStats | None = None,
 ) -> SyncStats:
-    """Replicate every release of one standard, accumulating into *stats* if given.
+    """Replicate every publication of one standard, accumulating into *stats* if given.
 
-    The caller passes its own stats so that a release which raises cannot discard the
-    counters of the releases already committed before it. Returning them instead meant a
+    A publication is a release or a rules revision. Both are replicated by the same code on
+    the same pass, so the rules line cannot end up with a thinner set of guards than the
+    releases beside it.
+
+    The caller passes its own stats so that a publication which raises cannot discard the
+    counters of the publications already committed before it. Returning them instead meant a
     restored file was written to disk and then reported as `restored == 0`, because the
     return value never happened - and those counters are the only source of the operator
     markers, so a published file was silently rewritten and the log said nothing.
 
-    Releases are isolated from one another for the same reason standards are. They are
+    Publications are isolated from one another for the same reason standards are. They are
     independent units - separate directories, separate provenance, separate promises - but a
-    raise used to abandon every release after the failing one *and still let the run count as
+    raise used to abandon every one after the failing one *and still let the run count as
     complete*, because the standard was recorded as failed and `sync_all` returned an exit
     code meaning "ran to the end". The loop then wrote the verify stamp, recording a
-    verification of releases it had never read and suppressing the next attempt for a full
+    verification of publications it had never read and suppressing the next attempt for a full
     interval. That is precisely the pathology the exit-code split exists to prevent, one level
     below where it was fixed.
 
     Every failure is still reported: they are collected and raised together, so a standard
     with a bad release remains one failed standard rather than becoming several. The counters
-    stay release-granular, because that is the unit the run either established something about
-    or did not.
+    stay publication-granular, because that is the unit the run either established something
+    about or did not.
     """
     stats = SyncStats() if stats is None else stats
     failures: list[str] = []
+    publications = std.publications()
 
-    for rel in std.releases:
-        stats.releases_attempted += 1
+    for publication in publications:
+        stats.publications_attempted += 1
         try:
             if dry_run:
-                _plan_dry_run(std, rel, client, stats, log=log)
+                _plan_dry_run(std, publication, client, stats, log=log)
                 continue
-            plan = _plan_release(std, rel, root, client, verify=verify, log=log)
-            _commit_release(std, plan, stats, log=log)
+            plan = _plan_publication(std, publication, root, client, verify=verify, log=log)
+            _commit_publication(std, plan, stats, log=log)
         except Exception as exc:
             # As broad as the per-standard handler, and for the same reason: the faults worth
             # naming are a refused manifest edit, a network fault and a failing volume, but
             # the one that actually escaped was a KeyError from a malformed record. A bug in
-            # one release's path must not cost the others.
+            # one publication's path must not cost the others.
             message = _describe(exc)
-            stats.releases_failed += 1
+            stats.publications_failed += 1
             failures.append(message)
-            # Logged here, at the version that failed, and deliberately not again by
+            # Logged here, at the publication that failed, and deliberately not again by
             # sync_all: this line opens with the marker the runbooks name, which a
             # standard-level summary of several failures cannot.
-            log(f"  [FAIL] {std.id} v{rel.version}: {message.splitlines()[0]}")
+            log(f"  [FAIL] {std.id} {publication.slug}: {message.splitlines()[0]}")
 
     if failures:
-        raise StandardFailed(_combined_failure(std.id, failures, len(std.releases)))
+        raise StandardFailed(_combined_failure(std.id, failures, len(publications)))
     return stats
 
 
 def _combined_failure(std_id: str, failures: list[str], attempted: int) -> str:
-    """One message for one standard, however many of its releases failed.
+    """One message for one standard, however many of its publications failed.
 
     A single failure is passed through untouched, so `cairn sync`'s stderr block still opens
     with the marker rather than with a count of one.
 
-    Every entry is now one failed release - the dry run's refusal included, which used to be
-    summed per standard and appended afterwards - so the ratio is honest and cannot claim more
-    failures than the standard has releases.
+    Every entry is now one failed publication - the dry run's refusal included, which used to
+    be summed per standard and appended afterwards - so the ratio is honest and cannot claim
+    more failures than the standard has publications.
     """
     if len(failures) == 1:
         return failures[0]
     return (
-        f"{len(failures)} of {attempted} release(s) of {std_id} failed:\n\n"
+        f"{len(failures)} of {attempted} publication(s) of {std_id} failed:\n\n"
         + "\n\n".join(failures)
     )
 

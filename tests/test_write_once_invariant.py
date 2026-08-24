@@ -8,11 +8,16 @@ record with no checksum reached through the one branch that skips the fetch.
 
 So this enumerates instead. Five dimensions the sync actually branches on, crossed:
 
-    release state  x  provenance state  x  bytes on disk  x  upstream state  x  --verify
+    kind  x  release state  x  provenance state  x  bytes on disk  x  upstream state  x  --verify
 
 where a release state is the pair (lifecycle, served), which used to be a single six-value
 `status`. Squashing two independent facts into one enum is what made `withdrawn` - neither
 mutable nor served - a hole that four successive fixes each failed to close.
+
+and where *kind* is a release or a rules revision. They are one code path, so crossing it in
+is cheap; it is here rather than trusted because "one code path" is a claim about today, and
+the whole method of this file is to stop believing claims of that shape. A rules revision
+that quietly took a thinner path would otherwise be discovered by a reader of the site.
 
 and asserts one thing about all of them, phrased without reference to how the code works:
 
@@ -50,11 +55,12 @@ from cairn.manifest import (
     Lifecycle,
     MajorLine,
     Release,
+    RuleSet,
     Source,
     Standard,
     Steward,
 )
-from cairn.config import SITE_DIRNAME, site_dir
+from cairn.config import site_dir
 from cairn.sync import SyncStats, sync_all
 from cairn.util import sha256_hex
 
@@ -62,9 +68,16 @@ PUBLISHED = b"<xs:schema>the bytes that were published</xs:schema>\n"
 UPSTREAM_MOVED = b"<xs:schema>something else entirely</xs:schema>\n"
 CORRUPTED = b"\x00\x00 rot \x00\x00"
 
-# resolve() builds this from the standard below; matching it keeps every case from also
-# looking like a repoint, which is a different dimension with its own tests.
-RECORDED_URL = "https://raw.githubusercontent.com/o/r/main/demo.xsd"
+# What the two kinds are called on disk and upstream. resolve() builds the URL from the
+# standard below; matching it keeps every case from also looking like a repoint, which is a
+# different dimension with its own tests.
+KINDS = ["release", "rules"]
+ARTIFACT_NAME = {"release": "demo.xsd", "rules": "demo.sch"}
+SLUG = {"release": "v1.0.0", "rules": "v1/schematron/2026-07"}
+
+
+def _recorded_url(kind: str) -> str:
+    return f"https://raw.githubusercontent.com/o/r/main/{ARTIFACT_NAME[kind]}"
 
 # The full state space, which is now a product rather than an enum: two lifecycles times two
 # serving states. `(PUBLISHED, served=False)` is the old `withdrawn`, and `(DRAFT, served=False)`
@@ -87,9 +100,22 @@ UPSTREAM = ["unchanged", "moved"]
 VERIFY = [False, True]
 
 
-def _standard(state) -> Standard:
+def _standard(state, kind: str = "release") -> Standard:
+    """A standard holding exactly one publication, of the kind under test.
+
+    Only one, because the oracle reads `stats.failures[0]`: a second publication syncing
+    alongside would put its own outcome in the same list and every assertion about "this case"
+    would be about whichever failed first.
+    """
     lifecycle, served = state
-    artifact = Artifact(name="demo.xsd", role="schema", from_="repo", path="demo.xsd")
+    name = ARTIFACT_NAME[kind]
+    artifact = Artifact(
+        name=name,
+        role="schema" if kind == "release" else "schematron",
+        from_="repo",
+        path=name,
+    )
+    common = dict(lifecycle=lifecycle, served=served, artifacts=[artifact], ref="main")
     return Standard(
         id="demo",
         title="Demo",
@@ -97,49 +123,55 @@ def _standard(state) -> Standard:
         steward=Steward(org="x"),
         source=Source(type="github", repo="o/r", ref="main"),
         major_lines=[MajorLine(major=1, latest="1.0.0")],
-        releases=[Release(version="1.0.0", lifecycle=lifecycle, served=served,
-                          artifacts=[artifact], ref="main")],
+        releases=[Release(version="1.0.0", **common)] if kind == "release" else [],
+        rules=[] if kind == "release" else [RuleSet(revision="2026-07", applies_to=1, **common)],
     )
 
 
-def _seed(root: Path, state, provenance: str, on_disk: str) -> Path:
+def _seed(root: Path, state, provenance: str, on_disk: str, kind: str = "release") -> Path:
     lifecycle, served_flag = state
+    name = ARTIFACT_NAME[kind]
     # site_dir(), not root/"site". The sync resolves its document root through that
     # function, which honours CAIRN_SITE_DIR; hard-coding the path here meant that with
     # the variable set the sync wrote elsewhere, every assertion compared a file nothing
     # had touched, and all 96 cases passed while testing nothing.
-    vdir = site_dir(root) / "demo" / "v1.0.0"
+    vdir = site_dir(root) / "demo" / SLUG[kind]
     vdir.mkdir(parents=True)
-    served = vdir / "demo.xsd"
+    served = vdir / name
 
     if on_disk == "published":
         served.write_bytes(PUBLISHED)
     elif on_disk == "corrupted":
         served.write_bytes(CORRUPTED)
 
+    identity = (
+        {"version": "1.0.0"}
+        if kind == "release"
+        else {"revision": "2026-07", "applies_to": 1, "tested_against": None, "minimum_version": None}
+    )
     if provenance == "damaged":
         (vdir / "provenance.json").write_bytes(b"\xff\xfe not utf-8 any more\n")
     elif provenance != "absent":
         record = {
-            "name": "demo.xsd",
-            "role": "schema",
+            "name": name,
+            "role": "schema" if kind == "release" else "schematron",
             "media_type": "application/xml",
             "bytes": len(PUBLISHED),
-            "source": {"from": "repo", "url": RECORDED_URL, "repo": "o/r", "ref": "main", "commit": None},
+            "source": {"from": "repo", "url": _recorded_url(kind), "repo": "o/r", "ref": "main", "commit": None},
             "fetched_at": "2026-01-01T00:00:00+00:00",
         }
         if provenance == "valid":
             record["sha256"] = sha256_hex(PUBLISHED)
-            (vdir / "SHA256SUMS").write_bytes(f"{record['sha256']}  demo.xsd\n".encode())
+            (vdir / "SHA256SUMS").write_bytes(f"{record['sha256']}  {name}\n".encode())
         (vdir / "provenance.json").write_text(
-            json.dumps({"standard": "demo", "version": "1.0.0", "lifecycle": str(lifecycle),
+            json.dumps({"standard": "demo", **identity, "lifecycle": str(lifecycle),
                         "served": served_flag, "artifacts": [record]}),
             encoding="utf-8",
         )
     return served
 
 
-CASES = list(itertools.product(STATES, PROVENANCE, ON_DISK, UPSTREAM, VERIFY))
+CASES = list(itertools.product(KINDS, STATES, PROVENANCE, ON_DISK, UPSTREAM, VERIFY))
 
 
 def _check_invariant(state, provenance, on_disk, upstream, served: Path, before, stats, case: str) -> None:
@@ -196,22 +228,22 @@ def _check_invariant(state, provenance, on_disk, upstream, served: Path, before,
         assert failed, f"{case}: served bytes became {after[:40]!r} and the run reported success"
 
 
-@pytest.mark.parametrize("state,provenance,on_disk,upstream,verify", CASES)
-def test_published_bytes_survive_every_state(tmp_path, state, provenance, on_disk, upstream, verify):
-    served = _seed(tmp_path, state, provenance, on_disk)
+@pytest.mark.parametrize("kind,state,provenance,on_disk,upstream,verify", CASES)
+def test_published_bytes_survive_every_state(tmp_path, kind, state, provenance, on_disk, upstream, verify):
+    served = _seed(tmp_path, state, provenance, on_disk, kind)
     before = served.read_bytes() if served.exists() else None
     upstream_bytes = PUBLISHED if upstream == "unchanged" else UPSTREAM_MOVED
 
     with mock.patch("cairn.sync.http_client", lambda: FakeClient(upstream_bytes)):
-        stats = sync_all([_standard(state)], tmp_path, verify=verify, log=lambda *a: None)
+        stats = sync_all([_standard(state, kind)], tmp_path, verify=verify, log=lambda *a: None)
 
-    case = f"{_name(state)}/{provenance}/{on_disk}/upstream {upstream}/verify {verify}"
+    case = f"{kind}/{_name(state)}/{provenance}/{on_disk}/upstream {upstream}/verify {verify}"
     _check_invariant(state, provenance, on_disk, upstream, served, before, stats, case)
 
 
 def test_the_table_covers_what_it_claims():
     """A miscounted product silently shrinks the cross product to a handful of cases."""
-    assert len(CASES) == 4 * 4 * 3 * 2 * 2 == 192
+    assert len(CASES) == 2 * 4 * 4 * 3 * 2 * 2 == 384
 
 
 PUBLISHED_SERVED = (Lifecycle.PUBLISHED, True)
@@ -265,7 +297,7 @@ def test_the_oracle_objects_to_a_dormant_release_being_written_to(tmp_path):
 # that froze the draft era's bytes as the published release, recorded a checksum matching them,
 # wrote SHA256SUMS to agree, and exited 0 - self-certifying, and wrong.
 
-TRANSITIONS = list(itertools.product(STATES, STATES, UPSTREAM, VERIFY))
+TRANSITIONS = list(itertools.product(KINDS, STATES, STATES, UPSTREAM, VERIFY))
 
 # The one edit the manifest may not make. Everything else in the 4x4 is legal, including both
 # directions of `served`, which is the point: un-serving a release and restoring it is now an
@@ -356,23 +388,23 @@ def _check_transition(was, now, upstream: str, served: Path, before, stats, case
         )
 
 
-@pytest.mark.parametrize("was,now,upstream,verify", TRANSITIONS)
-def test_a_manifest_edit_between_cycles(tmp_path, was, now, upstream, verify):
+@pytest.mark.parametrize("kind,was,now,upstream,verify", TRANSITIONS)
+def test_a_manifest_edit_between_cycles(tmp_path, kind, was, now, upstream, verify):
     with mock.patch("cairn.sync.http_client", lambda: FakeClient(PUBLISHED)):
-        sync_all([_standard(was)], tmp_path, log=lambda *a: None)
+        sync_all([_standard(was, kind)], tmp_path, log=lambda *a: None)
 
-    served = site_dir(tmp_path) / "demo" / "v1.0.0" / "demo.xsd"
+    served = site_dir(tmp_path) / "demo" / SLUG[kind] / ARTIFACT_NAME[kind]
     before = served.read_bytes() if served.exists() else None
     upstream_bytes = PUBLISHED if upstream == "unchanged" else UPSTREAM_MOVED
     with mock.patch("cairn.sync.http_client", lambda: FakeClient(upstream_bytes)):
-        stats = sync_all([_standard(now)], tmp_path, verify=verify, log=lambda *a: None)
+        stats = sync_all([_standard(now, kind)], tmp_path, verify=verify, log=lambda *a: None)
 
     _check_transition(was, now, upstream, served, before, stats,
-                      f"{_name(was)} -> {_name(now)}/upstream {upstream}/verify {verify}")
+                      f"{kind}/{_name(was)} -> {_name(now)}/upstream {upstream}/verify {verify}")
 
 
 def test_the_transition_table_covers_what_it_claims():
-    assert len(TRANSITIONS) == 4 * 4 * 2 * 2 == 64
+    assert len(TRANSITIONS) == 2 * 4 * 4 * 2 * 2 == 128
 
 
 def test_only_un_publishing_is_forbidden():

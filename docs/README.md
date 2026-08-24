@@ -16,6 +16,10 @@ here go deeper on the parts that are easy to get wrong.
 - **[Promoting a release from draft to stable](promoting-a-draft-release.md)** - the
   step-by-step for freezing a release, including the re-sync trap that silently freezes the
   wrong bytes if you miss it.
+- **[Publishing a validation-rules revision](publishing-a-rules-revision.md)** - Schematron
+  rules move on their own cadence, so they are published on their own track beside the schema
+  versions rather than inside them. What the URLs look like, what goes in the manifest, and the
+  routing order the whole thing depends on.
 
 ## Common tasks
 
@@ -23,6 +27,9 @@ here go deeper on the parts that are easy to get wrong.
   YAML edit reviewed as a pull request, no code required.
 - **Freeze a release (draft to stable)** - see
   [Promoting a release from draft to stable](promoting-a-draft-release.md).
+- **Publish or revise Schematron rules** - see
+  [Publishing a validation-rules revision](publishing-a-rules-revision.md). It never moves a
+  schema version, and it works on a standard whose releases are frozen for ever.
 - **Understand why a URL behaves the way it does** - see
   [Concepts and gotchas](concepts-and-gotchas.md).
 - **A pull request failed the write-once check** - the edit would change or remove a URL that
@@ -36,7 +43,7 @@ here go deeper on the parts that are easy to get wrong.
   either way; see [When a cycle fails](concepts-and-gotchas.md#when-a-cycle-fails), which
   lists every marker and what `cairn sync`'s exit codes mean.
 - **A deployment logged `PROVENANCE UNREADABLE` or `UNVERIFIABLE PUBLISHED FILE`** - these two
-  do not self-heal and will repeat every cycle. The sync has found a published release it
+  do not self-heal and will repeat every cycle. The sync has found something published it
   cannot establish the truth about, and refuses to guess rather than overwrite the evidence.
   Both need a person and an independent copy of the bytes; see
   [When a cycle fails](concepts-and-gotchas.md#when-a-cycle-fails).

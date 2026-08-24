@@ -4,7 +4,9 @@ The things about Cairn that are not obvious from a first read, and that bite peo
 they are missed. If you maintain manifests or operate the deployment, read this once.
 
 For the specific task of freezing a release, see
-[Promoting a release from draft to stable](promoting-a-draft-release.md).
+[Promoting a release from draft to stable](promoting-a-draft-release.md). For publishing
+Schematron rules alongside the schemas, see
+[Publishing a validation-rules revision](publishing-a-rules-revision.md).
 
 ---
 
@@ -19,6 +21,9 @@ For a standard `eaf`, major line `v1`, latest release `v1.0.0`:
 | `/eaf/v1/eaf.xsd` | `303` redirect to the latest concrete `v1.x.y` file | short (300s) |
 | `/eaf/v1.0.0` | Landing page for that exact release | short (300s) |
 | `/eaf/v1.0.0/eaf.xsd` | The actual file. Immutable, CORS `*` | 1 year, immutable |
+| `/eaf/v1/schematron/2026-07` | Page for one validation-rules revision | short (300s) |
+| `/eaf/v1/schematron/2026-07/eaf.sch` | The rules themselves. Frozen permanently | 1 year, immutable |
+| `/eaf/v1/schematron/latest/eaf.sch` | `303` to the newest frozen revision's file | short (300s) |
 
 The trap is the difference between `/eaf/v1/...` (major line, a redirect that follows the
 latest release) and `/eaf/v1.0.0/...` (an exact, frozen file). They look almost identical
@@ -61,6 +66,19 @@ changes what is **displayed and recorded** (the namespace document text and `cat
 It does **not** move where the document is served. The RDDL page is still served at
 `/<id>/vN`. Use the override only when a standard's real, externally-fixed namespace URI
 must be declared, and expect the served path and the declared URI to differ.
+
+## There are two kinds of thing cairn freezes
+
+A **release** is a schema version. A **rules revision** is one dated set of Schematron rules
+for a whole major line. Everything below about lifecycle, serving, freezing, refs and the
+write-once gate applies identically to both, because they are one type in the code
+(`Publication` in `src/cairn/manifest.py`) travelling one code path. Where this page says
+"release", read "release or rules revision" unless it says otherwise.
+
+The two exist separately for one reason: a published release may never gain an artifact, so
+rules stored inside a release could not be revised without minting a new schema version for a
+schema that had not changed. The full reasoning, the URL shapes and the manifest fields are in
+[Publishing a validation-rules revision](publishing-a-rules-revision.md).
 
 ## Status values do more than label a release
 
@@ -189,8 +207,12 @@ the schema cannot express. A manifest can be perfectly schema-valid and still fa
 - every `major_lines[].latest` must name a release that exists, is in that major line, and
   is not withdrawn
 - every release's major must have a `major_lines` entry
-- no duplicate artifact names within a release
+- no duplicate artifact names within a release or a rules revision
 - each artifact must carry the locator field its `from` requires (see the table above)
+- a rules revision's `applies_to` must have a `major_lines` entry, and no two revisions may
+  share a major line and a label
+- a revision's `tested_against` and `minimum_version` must each name a release of the same
+  standard in that same major line, and `tested_against` must not be below `minimum_version`
 
 If `validate` complains about something that "looks fine" against the schema, it is almost
 certainly one of these.
@@ -219,13 +241,22 @@ which parses three integers. To express pre-release maturity, use the `maturity`
 nginx assigns cache headers by URL shape:
 
 - concrete `/<id>/vX.Y.Z/...` files get `max-age=31536000, immutable` (one year)
-- everything else, including the namespace document and the pin-to-latest redirects, gets
-  `max-age=300` (five minutes)
+- so do `/<id>/vN/schematron/<revision>/...` files, which are frozen in the same way
+- everything else, including the namespace document, the pin-to-latest redirects and the
+  `schematron/latest` pointer, gets `max-age=300` (five minutes)
 
-The implication: a change to a moving pointer (the namespace, or where `/eaf/v1/eaf.xsd`
-redirects) propagates to clients within about five minutes, while a concrete versioned file
-can be cached for a year. That is safe precisely because concrete files are write-once, so
-their bytes never change. All of these are served with `Access-Control-Allow-Origin: *` and
+The implication: a change to a moving pointer (the namespace, where `/eaf/v1/eaf.xsd`
+redirects, or which revision `schematron/latest` resolves to) propagates to clients within
+about five minutes, while a concrete versioned file can be cached for a year. That is safe
+precisely because concrete files are write-once, so their bytes never change.
+
+The caveat is what this cannot see. nginx assigns the header by URL *shape*, and a `draft`
+release or revision has the same shape as a frozen one while its bytes still follow a branch,
+so its files are handed out with a year-long immutable cache too. That is why nothing in
+`draft` should be advertised or cited: the badge on the page says `draft`, but a client that
+has already cached the file will never ask again. It is also why `schematron/latest` resolves
+only to a *published* revision - being derived by sorting rather than chosen by a person, it
+would otherwise swing onto a draft on its own. All of these are served with `Access-Control-Allow-Origin: *` and
 `X-Content-Type-Options: nosniff`, and `OPTIONS` requests short-circuit to `204`.
 
 ## Deployment: what updates on its own, and what does not
@@ -277,13 +308,13 @@ A failure is reported per standard, not per run. `cairn sync` replicates every s
 can, records the ones that failed, and exits non-zero; the loop still runs `cairn build`, so
 one broken upstream does not stop the rest of the registry reaching the site.
 
-The same holds one level down: a release that fails does not abandon the other releases of its
-standard. That matters most on a `--verify` pass, where the point of the run is to have *read*
-every published artifact - abandoning the releases after a failure and still exiting with a
+The same holds one level down: a publication that fails does not abandon the others belonging
+to its standard. That matters most on a `--verify` pass, where the point of the run is to have *read*
+every published artifact - abandoning the publications after a failure and still exiting with a
 code meaning "ran to the end" had the loop stamp a verification of bytes it never looked at,
 suppressing the next attempt for a full interval. Failures within one standard are still
 collected and reported together, so it counts as one failed standard however many of its
-releases were involved.
+publications were involved.
 
 `cairn sync`'s exit code answers whether the run *finished*, which is a different question
 from whether it found anything:
@@ -294,17 +325,17 @@ from whether it found anything:
 | 1 | did not finish: unloadable manifest, unhandled fault, killed |
 | 3 | ran to the end, and something needs an operator |
 | 4 | ran to the end, and one or more standards failed |
-| 5 | ran to the end, and *every release it attempted* failed, so nothing was checked |
+| 5 | ran to the end, and *every publication it attempted* failed, so nothing was checked |
 
 That distinction is what the verify stamp is written from. A pass that finished counts as a
 verification even if it reported problems, so one persistently failing standard cannot make
 every cycle re-verify and re-download every other standard forever. A pass that did not
 finish is not stamped, because nothing can be concluded about the artifacts it never reached.
-Nor is 5: a pass in which every release failed re-read nothing, so recording it as a
-verification would suppress the next attempt for a full interval. The unit is the release, not
-the standard - a standard with one rotted release and two good ones did read two of them, and
-counting standards reported that as having checked nothing, which is what suppressed the stamp
-forever.
+Nor is 5: a pass in which every publication failed re-read nothing, so recording it as a
+verification would suppress the next attempt for a full interval. The unit is the publication -
+a release or a rules revision - not the standard. A standard with one rotted release and two
+good ones did read two of them, and counting standards reported that as having checked nothing,
+which is what suppressed the stamp forever.
 
 The table is `cairn sync` only. `cairn validate` is a gate rather than a step in a loop: it
 exits 0 or refuses with 1, and a refusal there is a finding, not a crash.
@@ -320,6 +351,12 @@ the number from `cairn exit-codes` rather than holding an opinion about it.
 
 Every marker is printed by `cairn` itself, so this list and the strings in the log have one
 source. They fall into three groups, and the group tells you how urgent it is.
+
+The markers naming a "version" cover both kinds of publication, because both make the same
+promise and go through the same guard. The path in the message tells you which you are looking
+at: `ead v4.0.0/ead.xsd` is a release, `ead v4/schematron/2026-07/ead.sch` is a rules revision.
+They are not split into two sets of markers, because operators alert on these strings and a
+second set would mean every alert had to be written twice.
 
 **A manifest edit would have broken a published URL.** The sync refuses and leaves the
 published files untouched. Fix the manifest; nothing is wrong with the volume.

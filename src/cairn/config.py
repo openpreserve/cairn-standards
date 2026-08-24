@@ -8,6 +8,19 @@ from pathlib import Path
 STANDARDS_DIRNAME = "standards"
 SCHEMA_RELPATH = Path("schemas") / "standard.schema.json"
 
+# A rules revision is served under its major line rather than under a concrete version, so
+# that revising the rules never moves a schema version: /<id>/v<major>/<segment>/<revision>/.
+# The segment is named here because four places have to agree on it - the path the manifest
+# derives, the routes nginx generates, the redirect that resolves the moving pointer, and the
+# cache map that decides which of the two may be cached for a year. A copy that drifted would
+# either strand the frozen bytes at a URL nothing serves or cache the pointer forever.
+RULES_SEGMENT = "schematron"
+# The moving pointer beside the dated revisions: /<id>/v<major>/schematron/latest/. It is a
+# generated redirect, never a directory in the document root, which is what keeps the store
+# write-once - nothing is ever rewritten in place to make `latest` mean something new. The
+# manifest's revision pattern excludes this word, so a revision can never shadow it.
+LATEST_SEGMENT = "latest"
+
 # Build outputs (git-ignored).
 SITE_DIRNAME = "site"                       # the nginx document root
 # The page the render writes into each release directory. It sits among write-once artifacts
