@@ -245,10 +245,12 @@ A manifest can be perfectly schema-valid and still fail these:
 - no duplicate artifact names within one release or revision
 - each artifact carries the locator field its `from` requires
 - each artifact name is a bare filename and is not one Cairn generates
-- a rules revision's `applies_to` has a `major_lines` entry, and no two revisions share a major
-  line and a label
+- a rules revision's label is a real calendar date, and `applies_to` has a `major_lines` entry,
+  and no two revisions share a major line and a label
 - a revision's `tested_against` and `minimum_version` each name a release of this standard in
   that same major line, and `tested_against` is not below `minimum_version`
+- a *published* revision's `tested_against` and `minimum_version` each name a *published*
+  release, because a version number only identifies particular bytes once that version is frozen
 
 If `validate` complains about something that looks fine against the schema, it is one of these.
 

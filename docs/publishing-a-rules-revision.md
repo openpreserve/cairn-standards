@@ -80,17 +80,22 @@ one-way, `served: false` withdraws without un-publishing, a published revision m
 
 Three fields are specific to this track:
 
-- **`revision`** is a dated label, `YYYY-MM` or `YYYY-MM-DD`. It is not free-form, because
-  "newest" has to be decidable by sorting: that is what the `latest` pointer resolves by. The
-  pattern also keeps the word `latest` out of the revision space, so a revision can never
-  shadow the pointer.
+- **`revision`** is a dated label, `YYYY-MM` or `YYYY-MM-DD`, and it is checked as a real
+  calendar date rather than merely a shape. It is not free-form because "newest" has to be
+  decidable by sorting: that is what the `latest` pointer resolves by, and `2026-13` would sort
+  above every real revision of that year and hold the pointer until 2027. The rule also keeps
+  the word `latest` out of the revision space, so a revision can never shadow the pointer.
 - **`applies_to`** is the major line, and must match the namespace the `.sch` declares. Cairn
   cannot read that out of the file: each `.sch` declares three namespaces and nothing in the
   file marks which is the subject, so the manifest states it and the file corroborates it.
 - **`tested_against`** is the exact schema version the rules' author wrote and tested the
   revision against. Only they know it, so it is recorded from what they tell us and displayed
   beside the checksums. Nothing is gated on it. It must name a release of this standard in the
-  same major line, so a typo is refused rather than published as a fact.
+  same major line, so a typo is refused rather than published as a fact - and once this revision
+  is `published`, that release must be published too. A draft is re-fetched from a branch every
+  cycle, so its version number does not identify any particular bytes; publishing a permanent
+  claim about it would be publishing a claim about nothing in particular. A draft revision may
+  cite a draft release, because it is exactly as provisional.
 
 And one that is usually absent:
 
@@ -123,9 +128,9 @@ and the drafts stay reachable at their own dated URLs.
 ## Checklist
 
 - [ ] the `.sch` declares the namespace of the major line you are putting it under
-- [ ] `revision:` is a dated label and does not already exist for that major line
+- [ ] `revision:` is a real date and does not already exist for that major line
 - [ ] `applies_to:` has a matching `major_lines` entry
-- [ ] `tested_against:` confirmed with the rules' author, not guessed
+- [ ] `tested_against:` confirmed with the rules' author, not guessed, and already published
 - [ ] `minimum_version:` set only if the rules genuinely do not apply to the whole line
 - [ ] `lifecycle: published` and `ref:` pinned to a tag or commit, not a branch
 - [ ] every per-artifact `ref:` pinned too

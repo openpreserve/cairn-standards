@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import tempfile
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -108,7 +109,29 @@ _SAFE_ARTIFACT_NAME = re.compile(r"\A[A-Za-z0-9_-][A-Za-z0-9._-]*\Z")
 # `latest` pointer resolves by that order, and a label nobody can order leaves the pointer's
 # target depending on manifest sequence. It also keeps the word `latest` out of the revision
 # space, so a revision can never shadow the pointer that resolves to it.
-_SAFE_REVISION = re.compile(r"\A\d{4}-\d{2}(-\d{2})?\Z")
+_SAFE_REVISION = re.compile(r"\A\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12][0-9]|3[01]))?\Z")
+
+
+def is_dated_revision(label: str) -> bool:
+    """Whether *label* is a real calendar date, `YYYY-MM` or `YYYY-MM-DD`.
+
+    The shape is not enough, because sorting is what the moving `latest` pointer resolves by
+    and a label that sorts high wins it. `2026-13` is not a month, but it sorts above every
+    real revision of 2026 and would take the pointer from them; so would `2026-99`. A published
+    revision can never be removed from the manifest either, so the typo and the URL it reserves
+    are permanent - `served: false` hides it and hands the pointer back, but the segment stays
+    spent.
+
+    The regex rules out the months and the day numbers that can never exist; the parse rules out
+    the ones that exist only in some months, which no pattern can express.
+    """
+    if not _SAFE_REVISION.match(label):
+        return False
+    try:
+        datetime.strptime(label, "%Y-%m-%d" if len(label) == 10 else "%Y-%m")
+    except ValueError:
+        return False
+    return True
 
 
 def is_provenance_record_set(data: object) -> bool:

@@ -15,8 +15,8 @@ from . import BASE_URL
 from .config import GENERATED_NAMES, RULES_SEGMENT, schema_path, standards_dir
 from .util import (
     _SAFE_ARTIFACT_NAME,
-    _SAFE_REVISION,
     DecodeError,
+    is_dated_revision,
     media_type_for,
     read_text,
     semver_key,
@@ -67,6 +67,7 @@ class Artifact:
         return media_type_for(self.name, self.media_type)
 
 
+@dataclass(kw_only=True)
 class Publication:
     """Anything cairn replicates as one write-once unit: a release, or a rules revision.
 
@@ -78,18 +79,21 @@ class Publication:
     those guards exist for is reachable here too: the rules line is write-once for the same
     reason and by the same mechanism.
 
-    Deliberately not a dataclass. Making it one fixes the field order of every subclass's
-    constructor, so `Release(version=...)` would have to be spelled with `lifecycle` first.
-    The subclasses declare their own fields; this declares what they must have in common.
+    The fields live here rather than being restated by each subclass, and `kw_only` is what
+    makes that possible: keyword-only fields are lifted out of the positional order, so a
+    subclass can still lead with the one field that names it - `version`, `revision` - without
+    inheriting a fixed position for `lifecycle`. Restated, they were declarations a subclass
+    could simply forget, and every property below would then fail at runtime rather than at
+    class definition.
     """
 
     lifecycle: Lifecycle
     artifacts: list[Artifact]
-    served: bool
-    maturity: str | None
-    ref: str | None
-    released: str | None
-    notes: str | None
+    served: bool = True
+    maturity: str | None = None
+    ref: str | None = None
+    released: str | None = None
+    notes: str | None = None
 
     @property
     def slug(self) -> str:
@@ -170,13 +174,6 @@ class Publication:
 @dataclass
 class Release(Publication):
     version: str
-    lifecycle: Lifecycle
-    artifacts: list[Artifact]
-    served: bool = True
-    maturity: str | None = None
-    ref: str | None = None
-    released: str | None = None
-    notes: str | None = None
 
     @property
     def major(self) -> int:
@@ -221,13 +218,6 @@ class RuleSet(Publication):
 
     revision: str
     applies_to: int
-    lifecycle: Lifecycle
-    artifacts: list[Artifact]
-    served: bool = True
-    maturity: str | None = None
-    ref: str | None = None
-    released: str | None = None
-    notes: str | None = None
     # The schema version this revision was written and tested against. Only the rules' author
     # knows it, so it is recorded from what they tell us and displayed; nothing is gated on it.
     tested_against: str | None = None
@@ -511,12 +501,14 @@ def _rules_checks(std: Standard) -> list[str]:
 
     seen: set[tuple[int, str]] = set()
     for rules in std.rules:
-        # Anchored here as well as in the schema, for the same reason as an artifact name: the
+        # Checked here as well as in the schema, for the same reason as an artifact name: the
         # schema's pattern is ECMA-262, where `$` also matches before a trailing newline, and
-        # this label is joined onto the document root and handed to mkdir().
-        if not _SAFE_REVISION.match(rules.revision):
+        # this label is joined onto the document root and handed to mkdir(). It is also parsed
+        # as a date, which no pattern can do: `2026-02-31` has the right shape, is not a day,
+        # and sorts above every real revision of that February.
+        if not is_dated_revision(rules.revision):
             errors.append(
-                f"rules revision {rules.revision!r} is not a dated label (YYYY-MM or YYYY-MM-DD)"
+                f"rules revision {rules.revision!r} is not a calendar date (YYYY-MM or YYYY-MM-DD)"
             )
         key = (rules.applies_to, rules.revision)
         if key in seen:
@@ -548,10 +540,24 @@ def _rules_checks(std: Standard) -> list[str]:
                     f"rules revision {rules.revision}: {field_name} {version} is not a release "
                     f"of this standard"
                 )
-            elif target.major != rules.applies_to:
+                continue
+            if target.major != rules.applies_to:
                 errors.append(
                     f"rules revision {rules.revision}: {field_name} {version} is in major line "
                     f"v{target.major}, but the revision applies to v{rules.applies_to}"
+                )
+            # A version number only identifies bytes once that version is frozen. A draft is
+            # re-fetched from a branch every cycle, so "tested against 1.1.0" names whatever
+            # 1.1.0 happened to be, which is not a statement anyone can act on - and once this
+            # revision is published the claim is permanent and the page carrying it can never
+            # be corrected. A draft revision may say it, because it is as provisional as the
+            # release it names.
+            if rules.ever_published and not target.ever_published:
+                errors.append(
+                    f"rules revision {rules.revision} is published, but its {field_name} names "
+                    f"v{version}, which is still a draft. A draft is re-fetched from a branch "
+                    f"every cycle, so that version number does not identify any particular "
+                    f"bytes; publish v{version} first, or leave this revision as a draft."
                 )
 
         if (

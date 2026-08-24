@@ -26,7 +26,7 @@ For a standard `eaf`, major line `v1`, latest release `v1.0.0`, rules revision `
 | `/eaf/v1/schematron/2026-07/eaf.sch` | The rules themselves | 1 year, immutable |
 | `/eaf/v1/schematron/latest/eaf.sch` | `303` to the newest frozen revision's file | 300s |
 | `/catalog.json` | The whole registry as machine-readable JSON | 300s |
-| `/sitemap.xml` | Every page above | 300s |
+| `/sitemap.xml` | Every page above that is currently served | 300s |
 
 Every response carries `Access-Control-Allow-Origin: *` and `X-Content-Type-Options: nosniff`.
 `OPTIONS` short-circuits to `204`. Schema serialisations are served as `application/xml`.
@@ -98,8 +98,10 @@ is in [Publishing a validation-rules revision](publishing-a-rules-revision.md).
 
 ## Withdrawn URLs answer 410, not 404
 
-A release or revision that is no longer served stays in the manifest and stays listed, and its
-URLs return `410 Gone`. That is a deliberate "this existed and has been withdrawn" signal,
+A release or revision that is no longer served stays in the manifest and stays listed on the
+standard's landing page, and its URLs return `410 Gone`. It is dropped from `sitemap.xml` and
+from the namespace document's machine-readable entries, because both of those say "this is
+worth fetching" and a `410` is the opposite. That is a deliberate "this existed and has been withdrawn" signal,
 which `404` is not. Withdrawing does not delete history and does not un-publish anything; see
 [Lifecycle and freezing](lifecycle-and-freezing.md).
 

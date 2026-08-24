@@ -128,8 +128,8 @@
       "properties": {
         "revision": {
           "type": "string",
-          "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$",
-          "description": "Dated label for this revision, served at /<id>/vN/schematron/<revision>/. Dated rather than free-form so that 'newest' is decidable by sorting, which is what the moving 'latest' pointer resolves by; it also keeps the word 'latest' out of the revision space so a revision can never shadow the pointer."
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12][0-9]|3[01]))?$",
+          "description": "Dated label for this revision, served at /<id>/vN/schematron/<revision>/. Dated rather than free-form so that 'newest' is decidable by sorting, which is what the moving 'latest' pointer resolves by; it also keeps the word 'latest' out of the revision space so a revision can never shadow the pointer. cairn additionally parses it as a calendar date, so a day that exists only in some months is refused as well."
         },
         "applies_to": {
           "type": "integer",

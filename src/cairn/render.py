@@ -333,6 +333,9 @@ def render_site(standards: list[Standard], root: Path, log=print) -> int:
 
         # One page per rules revision, beside the bytes it describes
         for major, revisions in rules_ctx.items():
+            # Once per major line, not once per revision: it sorts and filters the whole line,
+            # and it is the same answer for every revision in it.
+            current = std.latest_rules(major)
             for ctx in revisions:
                 rules = ctx["publication"]
                 _write(
@@ -344,7 +347,11 @@ def render_site(standards: list[Standard], root: Path, log=print) -> int:
                         notes_html=ctx["notes_html"],
                         namespace=std.namespace_for(major),
                         tested_release=std.release(rules.tested_against) if rules.tested_against else None,
-                        is_current=std.latest_rules(major) is rules,
+                        minimum_release=std.release(rules.minimum_version) if rules.minimum_version else None,
+                        # None means no revision on this line is frozen and served, so no
+                        # `latest` route exists. The page must not offer a URL that 404s.
+                        current_rules=current,
+                        is_current=current is rules,
                         rules_segment=RULES_SEGMENT,
                         latest_segment=LATEST_SEGMENT,
                     ),

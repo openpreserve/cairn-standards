@@ -1114,9 +1114,19 @@ def _write_publication_metadata(std: Standard, plan: PublicationPlan, stats: Syn
     # SHA256SUMS first, provenance last. provenance.json is what the next run compares
     # against, so writing it last means an interruption leaves the pair looking out of date
     # rather than falsely up to date, and the next cycle rewrites both.
-    atomic_write(sums_path, expected_sums)
+    #
+    # Each is written only if its own content changed. They are reached together but they do
+    # not change together: an edit to a recorded field that is not a checksum - `served`, or a
+    # rules revision's `tested_against` - has to rewrite the record and has nothing to say
+    # about the sums. Rewriting both installs a new inode and moves the mtime of the file
+    # users are told to run `sha256sum -c` against, on a publication documented as permanent.
+    wrote = []
+    if sums_current != expected_sums:
+        atomic_write(sums_path, expected_sums)
+        wrote.append(SUMS_NAME)
     atomic_write(prov_path, (json.dumps(provenance, indent=2) + "\n").encode())
-    log(f"  [meta] {std.id} {publication.slug}/{PROVENANCE_NAME}, {SUMS_NAME}")
+    wrote.append(PROVENANCE_NAME)
+    log(f"  [meta] {std.id} {publication.slug}/{', '.join(reversed(wrote))}")
 
 
 def _plan_dry_run(std: Standard, publication: Publication, client: httpx.Client, stats: SyncStats, *, log) -> None:

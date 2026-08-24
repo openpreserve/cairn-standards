@@ -17,6 +17,7 @@ twice is why it is pinned rather than remembered.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest import mock
 
@@ -198,11 +199,20 @@ def test_a_published_revision_must_pin_its_own_ref(tmp_path):
 
 # --- validation of what only this track can get wrong ----------------------------------------
 
-@pytest.mark.parametrize("label", ["latest", "2026-7", "spring", "2026-07-1", "../etc"])
-def test_a_revision_label_must_be_a_date(tmp_path, label):
+@pytest.mark.parametrize(
+    "label",
+    ["latest", "2026-7", "spring", "2026-07-1", "../etc", "2026-13", "2026-00", "2026-02-31"],
+)
+def test_a_revision_label_must_be_a_real_date(tmp_path, label):
     """Dated labels are what make "newest" decidable, which is what the moving pointer resolves
-    by. `latest` is refused by the same pattern, so a revision can never shadow the pointer,
-    and so is anything that would escape the document root when joined onto it."""
+    by. `latest` is refused by the same rule, so a revision can never shadow the pointer, and so
+    is anything that would escape the document root when joined onto it.
+
+    The last three are the reason a shape check is not enough. `2026-13` is not a month, but it
+    sorts above every real revision of 2026, so it would take the pointer and keep it until
+    2027 - and a published revision can never be removed from the manifest, so neither the typo
+    nor the URL it reserves can be taken back.
+    """
     with pytest.raises(ManifestError):
         _load(tmp_path, "label", ONE_REVISION.replace('revision: "2026-07"', f'revision: "{label}"'))
 
@@ -247,6 +257,39 @@ def test_tested_against_must_be_in_the_line_the_revision_applies_to(tmp_path):
 
     with pytest.raises(ManifestError, match="is in major line v2"):
         _load(tmp_path, "crossed", two_lines)
+
+
+def test_a_published_revision_cannot_cite_a_draft_release(tmp_path):
+    """A version number identifies bytes only once that version is frozen.
+
+    A draft is re-fetched from a branch every cycle, so "tested against 1.1.0" names whatever
+    1.1.0 happened to be that day. Published, the revision carries that claim permanently, on a
+    page the write-once gate then refuses to let anyone correct.
+    """
+    with_draft = ONE_REVISION.replace(
+        "releases:\n",
+        "releases:\n"
+        "  - version: 1.1.0\n    lifecycle: draft\n"
+        "    artifacts:\n      - { name: demo.xsd, role: schema, from: repo, path: demo.xsd }\n",
+    ).replace("tested_against: 1.0.0", "tested_against: 1.1.0")
+
+    with pytest.raises(ManifestError, match="which is still a draft"):
+        _load(tmp_path, "cites-draft", with_draft)
+
+
+def test_a_draft_revision_may_cite_a_draft_release(tmp_path):
+    """The other direction. Both are provisional and both move, so the claim is as good as the
+    thing it describes - and refusing it would block the ordinary pre-release state, where the
+    schema and its rules are being settled together."""
+    both_draft = ONE_REVISION.replace(
+        "releases:\n",
+        "releases:\n"
+        "  - version: 1.1.0\n    lifecycle: draft\n"
+        "    artifacts:\n      - { name: demo.xsd, role: schema, from: repo, path: demo.xsd }\n",
+    ).replace("tested_against: 1.0.0", "tested_against: 1.1.0").replace(
+        "    lifecycle: published\n    ref: RULES-2026-07", "    lifecycle: draft")
+
+    assert _one(tmp_path, both_draft).rule_set(1, "2026-07").tested_against == "1.1.0"
 
 
 def test_a_revision_cannot_be_tested_below_its_own_stated_minimum(tmp_path):
@@ -389,6 +432,22 @@ def _sync(tmp_path: Path, body: str, content: bytes, **kwargs):
 
 RULES_BYTES = b'<schema xmlns="http://purl.oclc.org/dsdl/schematron"/>\n'
 
+# One live revision, one withdrawn, one draft: the three states a page has to tell apart.
+WITHDRAWN_AND_LIVE = ONE_REVISION + """
+  - revision: "2026-08"
+    applies_to: 1
+    lifecycle: published
+    ref: RULES-2026-08
+    served: false
+    artifacts:
+      - { name: demo.sch, role: schematron, from: repo, path: schematron/demo.sch }
+  - revision: "2026-09"
+    applies_to: 1
+    lifecycle: draft
+    artifacts:
+      - { name: demo.sch, role: schematron, from: repo, path: schematron/demo.sch }
+"""
+
 
 def test_a_revision_is_replicated_and_frozen_like_a_release(tmp_path):
     standards, stats = _sync(tmp_path, ONE_REVISION, RULES_BYTES)
@@ -464,3 +523,88 @@ def test_a_standard_with_no_rules_says_so_by_omission(tmp_path):
     catalog = json.loads((site_dir(root) / "catalog.json").read_text())["standards"][0]
     assert catalog["rules"] == []
     assert "rules_latest" not in catalog["major_lines"][0]
+
+
+# --- what the pages may claim ------------------------------------------------------------------
+
+def test_a_line_with_no_frozen_revision_does_not_advertise_the_latest_pointer(tmp_path):
+    """The page must not hand a reader a URL that does not answer.
+
+    `latest` resolves only to a published, served revision, and no route is generated until one
+    exists - so on a line whose only revision is a draft, printing the pointer in the "how to
+    reference these rules" panel offers a 404 to anyone who copies it.
+    """
+    draft = ONE_REVISION.replace('    lifecycle: published\n    ref: RULES-2026-07', "    lifecycle: draft")
+    standards, _ = _sync(tmp_path, draft, RULES_BYTES)
+    root = tmp_path / "ws"
+    render_site(standards, root, log=lambda *a: None)
+
+    page = (site_dir(root) / "demo" / "v1" / "schematron" / "2026-07" / "index.html").read_text()
+    panels = re.findall(r'<div class="url-panel">([^<]*)</div>', page)
+
+    assert panels, "the page stopped offering any URL at all"
+    assert not any("/schematron/latest/" in p for p in panels), panels
+    assert "schematron/latest" not in render_routes(standards), "no route backs that pointer"
+
+
+def test_a_withdrawn_publication_is_not_advertised_to_crawlers(tmp_path):
+    """A sitemap says a URL is worth indexing. A withdrawn publication answers 410, for as long
+    as the history stays in the manifest - which is for ever - so listing it is a crawl error on
+    every pass. It stays listed for a reader on the landing page, which is the right place for
+    "this existed and is gone"."""
+    standards, _ = _sync(tmp_path, WITHDRAWN_AND_LIVE, RULES_BYTES)
+    root = tmp_path / "ws"
+    render_site(standards, root, log=lambda *a: None)
+
+    sitemap = (site_dir(root) / "sitemap.xml").read_text()
+
+    assert "/demo/v1/schematron/2026-07<" in sitemap, "the live revision should be indexed"
+    assert "/demo/v1/schematron/2026-08" not in sitemap, "a 410 was advertised to crawlers"
+
+
+def test_the_namespace_document_only_asserts_resources_that_are_current(tmp_path):
+    """The namespace document is machine-readable, and an `rddl:resource` with a
+    normative-reference arcrole is a statement that the thing at that URL is a current,
+    citable part of this namespace.
+
+    A withdrawn revision answers 410 and a draft is re-fetched from a branch every cycle.
+    Both stay in the human table, with their badge; neither may carry the assertion.
+    """
+    standards, _ = _sync(tmp_path, WITHDRAWN_AND_LIVE, RULES_BYTES)
+    root = tmp_path / "ws"
+    render_site(standards, root, log=lambda *a: None)
+
+    namespace = (site_dir(root) / "demo" / "_ns" / "v1.xhtml").read_text()
+    asserted = re.findall(r'<rddl:resource[^>]*xlink:href="([^"]*)"', namespace, re.S)
+
+    assert "/demo/v1/schematron/2026-07/demo.sch" in asserted
+    assert not any("2026-08" in href for href in asserted), "a 410 was asserted as a resource"
+    assert not any("2026-09" in href for href in asserted), "a draft was asserted as a resource"
+    # Still visible to a person, which is what the table is for.
+    assert "/demo/v1/schematron/2026-08/demo.sch" in namespace
+    assert "/demo/v1/schematron/2026-09/demo.sch" in namespace
+
+
+def test_a_metadata_only_edit_does_not_reinstall_sha256sums(tmp_path):
+    """`tested_against` is recorded but is not a checksum, so correcting it has to rewrite the
+    record and has nothing to say about the sums.
+
+    Rewriting both installs a new inode and moves the mtime of the file users are told to run
+    `sha256sum -c` against, on a publication documented as permanent - the churn this writer
+    exists to avoid, reached by the one edit that is allowed on a frozen publication.
+    """
+    with_versions = ONE_REVISION.replace(
+        "releases:\n",
+        "releases:\n"
+        "  - version: 1.1.0\n    lifecycle: published\n    ref: v1.1.0\n"
+        "    artifacts:\n      - { name: demo.xsd, role: schema, from: repo, path: demo.xsd }\n",
+    )
+    _sync(tmp_path, with_versions, RULES_BYTES)
+    sums = site_dir(tmp_path / "ws") / "demo" / "v1" / "schematron" / "2026-07" / "SHA256SUMS"
+    before = sums.stat().st_ino
+
+    _sync(tmp_path, with_versions.replace("tested_against: 1.0.0", "tested_against: 1.1.0"), RULES_BYTES)
+
+    record = json.loads((sums.parent / "provenance.json").read_text())
+    assert record["tested_against"] == "1.1.0", "the record was not corrected"
+    assert sums.stat().st_ino == before, "SHA256SUMS was reinstalled with identical bytes"

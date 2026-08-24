@@ -220,8 +220,7 @@ def test_the_cache_map_knows_every_generated_file_in_a_publication_directory():
     only the first match would have let that second copy list something else entirely while
     this test kept reporting on the release one.
     """
-    conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
-    groups = re.findall(r"\(([^)]*)\)\?\$", conf)
+    groups = re.findall(r"\(([^)]*)\)\?\$", "\n".join(_cache_map()))
     assert groups, "the cache map no longer has a group naming the re-rendered files"
     for group in groups:
         named = set(group.replace("\\", "").split("|"))

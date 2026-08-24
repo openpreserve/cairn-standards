@@ -77,6 +77,7 @@
             {% if rules.released %}<div class="note">{{ rules.released }}</div>{% endif %}</td>
           <td>
             {% for a in ctx.artifacts %}
+            {% if rules.ever_published and rules.is_served %}
             <rddl:resource xlink:type="simple"
                            xlink:role="{{ rddl_nature(a.role) }}"
                            xlink:arcrole="{{ rddl_purpose(a.role) }}"
@@ -84,6 +85,13 @@
                            xlink:title="{{ a.title }}">
               <a href="{{ a.url }}"><code>{{ a.name }}</code></a>
             </rddl:resource>
+            {% else %}
+            {# Listed for a reader, but not asserted as a resource of this namespace: a
+               withdrawn revision answers 410, and a draft is re-fetched from a branch every
+               cycle. An RDDL consumer resolving a normative-reference arcrole would take
+               either as current and citable. #}
+            <a href="{{ a.url }}"><code>{{ a.name }}</code></a>
+            {% endif %}
             {% endfor %}
           </td>
           <td>{% if rules.tested_against %}<a href="/{{ std.id }}/v{{ rules.tested_against }}">v{{ rules.tested_against }}</a>{% else %}-{% endif %}

@@ -17,14 +17,16 @@
       (namespace <code>{{ namespace }}</code>)</dd>
     {% if rules.minimum_version %}
     <dt>Minimum version</dt>
-    <dd><a href="/{{ std.id }}/v{{ rules.minimum_version }}">v{{ rules.minimum_version }}</a> and later.
+    <dd><a href="/{{ std.id }}/v{{ rules.minimum_version }}">v{{ rules.minimum_version }}</a>{% if minimum_release and not minimum_release.is_served %}
+      <span class="badge {{ minimum_release.label }}">{{ minimum_release.label }}</span>{% endif %} and later.
       Earlier v{{ rules.applies_to }} releases are outside what this revision was written for.</dd>
     {% else %}
     <dt>Minimum version</dt><dd>None: every v{{ rules.applies_to }} release.</dd>
     {% endif %}
     <dt>Tested against</dt>
     <dd>
-      {% if tested_release %}<a href="/{{ std.id }}/v{{ tested_release.version }}">v{{ tested_release.version }}</a>,
+      {% if tested_release %}<a href="/{{ std.id }}/v{{ tested_release.version }}">v{{ tested_release.version }}</a>{% if not tested_release.is_served %}
+      <span class="badge {{ tested_release.label }}">{{ tested_release.label }}</span>{% endif %},
       as stated by the rules' author{% else %}not recorded{% endif %}
     </dd>
     {% if rules.released %}<dt>Released</dt><dd>{{ rules.released }}</dd>{% endif %}
@@ -61,9 +63,16 @@
   <h2>Referencing these rules</h2>
   <p>Pin to this exact revision. These bytes never change:</p>
   <div class="url-panel">{{ base_url }}/{{ std.id }}/{{ rules.slug }}/{{ artifacts[0].name if artifacts }}</div>
+  {% if current_rules %}
   <p>Or follow whichever revision is current{% if is_current %}, which is this one today{% endif %}:</p>
   <div class="url-panel">{{ base_url }}/{{ std.id }}/v{{ rules.applies_to }}/{{ rules_segment }}/{{ latest_segment }}/{{ artifacts[0].name if artifacts }}</div>
   <p class="note">Use the dated form in audit records and anywhere you need to state exactly which
     rules something was validated against. Use the current form in documentation, where you mean
     "the rules as they stand". Old revisions are never removed.</p>
+  {% else %}
+  <p class="note">There is no current-rules pointer for v{{ rules.applies_to }} yet. It resolves
+    only to a revision that is published and served, and this line has none, so
+    <code>/{{ std.id }}/v{{ rules.applies_to }}/{{ rules_segment }}/{{ latest_segment }}/</code>
+    does not answer. Cite the dated form above until a revision is frozen.</p>
+  {% endif %}
 {% endblock %}

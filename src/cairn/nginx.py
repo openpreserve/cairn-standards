@@ -29,6 +29,22 @@ def _escaped(version: str) -> str:
     return version.replace(".", r"\.")
 
 
+def _serve_directory() -> list[str]:
+    """The directives that serve a tree of generated pages and replicated files.
+
+    Restated from `location /` in the base config because a regex location that matches has to
+    handle its own content, and stated once here because two generated blocks need the pair.
+    The rewrite is the load-bearing half: without it a directory URI is answered by nginx's
+    append-a-slash redirect, which `absolute_redirect off` makes relative, which any layer in
+    front that normalises the slash away bounces back for ever. That loop reached production
+    once already.
+    """
+    return [
+        f"    rewrite ^(.+)/$ $1 last;",
+        f"    try_files $uri $uri/{RELEASE_PAGE_NAME} =404;",
+    ]
+
+
 def _mutable_location(path_pattern: str, why: str) -> list[str]:
     """Serve a draft publication's directory, marking it as not cacheable for a year.
 
@@ -51,8 +67,7 @@ def _mutable_location(path_pattern: str, why: str) -> list[str]:
         f"# {why}",
         f'location ~ "{path_pattern}" {{',
         f"    set $cairn_mutable mutable;",
-        f"    rewrite ^(.+)/$ $1 last;",
-        f"    try_files $uri $uri/{RELEASE_PAGE_NAME} =404;",
+        *_serve_directory(),
         f"}}",
     ]
 
@@ -154,8 +169,7 @@ def _rules_locations(std: Standard, major: int) -> list[str]:
     # into a version directory that has never held rules.
     lines += [
         f'location ~ "^{prefix}(/.*)?$" {{',
-        f"    rewrite ^(.+)/$ $1 last;",
-        f"    try_files $uri $uri/{RELEASE_PAGE_NAME} =404;",
+        *_serve_directory(),
         f"}}",
     ]
     return lines
